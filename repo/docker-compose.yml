@@ -1,0 +1,22 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: "sqlite:///app/storage/app.db"
+      STATIC_DIR: "/app/static"
+      RUST_LOG: "info"
+      ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    volumes:
+      - app_storage:/app/storage
+
+volumes:
+  app_storage:

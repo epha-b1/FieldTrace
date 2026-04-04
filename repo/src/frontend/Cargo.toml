@@ -1,0 +1,18 @@
+[package]
+name = "fieldtrace-frontend"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fieldtrace-frontend"
+path = "main.rs"
+
+[dependencies]
+leptos = { version = "0.6", features = ["csr"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gloo-net = "0.6"
+gloo-timers = { version = "0.3", features = ["futures"] }
+console_error_panic_hook = "0.1"
+wasm-bindgen-futures = "0.4"
+fieldtrace-shared = { path = "../shared" }

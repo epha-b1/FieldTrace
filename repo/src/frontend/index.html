@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FieldTrace</title>
+    <link data-trunk rel="rust" />
+    <style>
+        :root {
+            --color-bg: #f5f6fa;
+            --color-surface: #ffffff;
+            --color-primary: #1a1a2e;
+            --color-accent: #16213e;
+            --color-ok: #2e7d32;
+            --color-error: #c62828;
+            --color-muted: #666;
+            --color-border: #ddd;
+            --radius: 8px;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+            background: var(--color-bg);
+            color: var(--color-primary);
+            line-height: 1.5;
+        }
+        /* ── Header / Nav ── */
+        .app-header {
+            background: var(--color-accent);
+            color: #fff;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .app-header h1 { font-size: 1.25rem; font-weight: 600; }
+        .nav-spacer { flex: 1; }
+        .nav-user { font-size: 0.875rem; opacity: 0.9; }
+        .nav-logout {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+            border: 1px solid rgba(255,255,255,0.3);
+            padding: 4px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .nav-logout:hover { background: rgba(255,255,255,0.25); }
+        /* ── App body ── */
+        .app-body { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+        .card {
+            background: var(--color-surface);
+            border-radius: var(--radius);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .card h2 { font-size: 1rem; margin-bottom: 12px; color: var(--color-accent); }
+        /* ── Status indicators ── */
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-weight: 500;
+            font-size: 0.875rem;
+        }
+        .status-ok { background: #e8f5e9; color: var(--color-ok); }
+        .status-error { background: #ffebee; color: var(--color-error); }
+        .status-loading { background: #f5f5f5; color: var(--color-muted); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .dot-ok { background: var(--color-ok); }
+        .dot-error { background: var(--color-error); }
+        .dot-loading { background: var(--color-muted); animation: pulse 1.2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+        /* ── Auth pages ── */
+        .auth-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .auth-card {
+            background: var(--color-surface);
+            border-radius: var(--radius);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.12);
+            padding: 32px;
+            width: 100%;
+            max-width: 400px;
+        }
+        .auth-title { font-size: 1.5rem; color: var(--color-accent); margin-bottom: 4px; }
+        .auth-card h2 { font-size: 1.1rem; color: var(--color-muted); margin-bottom: 20px; font-weight: 400; }
+        .auth-subtitle { font-size: 0.85rem; color: var(--color-muted); margin-bottom: 16px; }
+        .auth-card label { display: block; font-weight: 500; margin-bottom: 4px; font-size: 0.9rem; }
+        .auth-card small { font-weight: 400; color: var(--color-muted); }
+        .auth-card input[type="text"],
+        .auth-card input[type="password"] {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--color-border);
+            border-radius: 4px;
+            font-size: 0.95rem;
+            margin-bottom: 14px;
+            outline: none;
+        }
+        .auth-card input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 2px rgba(26,26,46,0.1); }
+        .auth-card button[type="submit"] {
+            width: 100%;
+            padding: 10px;
+            background: var(--color-accent);
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            margin-top: 4px;
+        }
+        .auth-card button:hover:not(:disabled) { background: #0f3460; }
+        .auth-card button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .auth-link { text-align: center; margin-top: 16px; font-size: 0.85rem; color: var(--color-muted); }
+        .auth-link a { color: var(--color-accent); text-decoration: underline; }
+        /* ── Messages ── */
+        .msg { padding: 10px 14px; border-radius: 4px; margin-bottom: 14px; font-size: 0.9rem; }
+        .msg-error { background: #ffebee; color: var(--color-error); border: 1px solid #ffcdd2; }
+        .msg-info { background: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+        /* ── Profile ── */
+        .profile-info p { margin-bottom: 6px; }
+        .profile-info strong { color: var(--color-accent); }
+        /* ── Buttons ── */
+        .btn { padding: 8px 16px; background: var(--color-accent); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9rem; margin: 4px 2px; }
+        .btn:hover { background: #0f3460; }
+        .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+        .btn-danger { background: var(--color-error); }
+        .btn-danger:hover { background: #a11; }
+        /* ── Address Book ── */
+        .addr-list { margin-top: 12px; }
+        .addr-item { padding: 12px; border: 1px solid var(--color-border); border-radius: 4px; margin-bottom: 8px; }
+        .addr-item strong { color: var(--color-accent); }
+        .addr-item p { font-size: 0.9rem; margin: 4px 0; }
+        .addr-form { margin: 12px 0; }
+        .addr-form input { display: block; width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid var(--color-border); border-radius: 4px; font-size: 0.9rem; }
+        /* ── Center box (loading) ── */
+        .center-box { display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    </style>
+</head>
+<body></body>
+</html>

@@ -1,0 +1,7 @@
+target/
+storage/
+*.db
+*.db-shm
+*.db-wal
+src/frontend/dist/
+.DS_Store
