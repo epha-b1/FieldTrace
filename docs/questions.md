@@ -119,3 +119,175 @@
 **Assumption:** Unlinked evidence can be deleted by the Operations Staff who uploaded it, or by an Administrator. Once linked to any traceability record, the evidence record becomes immutable — it cannot be deleted or modified, only the link can be retracted (which hides it from public view but preserves the record). After the 365-day retention period, unlinked evidence is auto-deleted unless a legal hold is active.
 
 **Solution:** `evidence_records.linked` boolean. Delete endpoint checks `linked = false`. Retention job skips records where `legal_hold = true` or `linked = true`. Retraction sets `traceability_evidence_links.retracted = true` without touching the evidence record.
+
+---
+
+## 13. Roles & Permissions — What Can Each Role Actually Do?
+
+**Question:** The prompt names three roles (Administrator, Operations Staff, Auditor) and mentions a few specific restrictions (publish/retract is Admin/Auditor only, facial recognition is a placeholder). What is the full permission matrix — which roles can create, edit, delete, or view each major resource?
+
+**Assumption:** Administrator has full access to everything. Operations Staff can create/edit intake records, evidence, supply entries, and check-ins but cannot publish/retract traceability codes or access admin config. Auditor has read-only access to published traceability records, intake records, and dashboard reports — no write access anywhere.
+
+**Solution:** A `role_permissions` map enforced server-side on every endpoint. Middleware checks `session.role` against the required permission for the route before processing the request.
+
+---
+
+## 14. Multi-Facility — How Many Facilities Does One Instance Serve?
+
+**Question:** The prompt references "facility code" in watermarks and check-in ledger, and the dashboard has a "region" filter. Does a single SQLite instance serve one facility or multiple? Can a user belong to multiple facilities?
+
+**Assumption:** A single instance serves one facility (single-node, offline). The "region" filter on the dashboard is for grouping/reporting purposes within that facility, not for cross-facility queries. A user belongs to one facility.
+
+**Solution:** `facilities` table with a single row in practice. `facility_id` is a FK on most tables for forward-compatibility but queries don't need to join across facilities.
+
+---
+
+## 15. Member ID — Who Are "Members"?
+
+**Question:** The check-in ledger scans a "member ID." Who are members — are they animals, people (adopters/visitors), or staff? Are members stored in the system or just referenced by ID?
+
+**Assumption:** Members are people (adopters, volunteers, or visitors) who check in to the facility. They are distinct from staff users who log in with credentials. Members have a minimal record: ID, name, and check-in history. They do not have system login access.
+
+**Solution:** `members` table: `id`, `member_id` (barcode value), `name`, `created_at`. Check-in ledger FKs to `members.id`. Member records are created/managed by Operations Staff or Administrators.
+
+---
+
+## 16. Inspections — What Is Being Inspected?
+
+**Question:** The home workspace shows "pending inspections" and evidence can be linked to an "inspection result." What is the subject of an inspection — an animal, a supply item, a facility area? Who creates and who resolves an inspection?
+
+**Assumption:** Inspections apply to intake records (animal health checks or supply quality checks). Operations Staff create inspections and record outcomes. An inspection has a status (pending/passed/failed) and can have evidence attached. Administrators can view all inspections; Auditors can view completed ones.
+
+**Solution:** `inspections` table: `id`, `intake_id`, `inspector_id`, `status`, `outcome_notes`, `created_at`, `resolved_at`. Evidence FKs to `inspection_id` optionally.
+
+---
+
+## 17. Offline Sync — Is There Any Sync at All?
+
+**Question:** The system is described as fully offline. Is there any scenario where data is exported or synced to another instance (e.g., a regional hub), or is the SQLite database truly the final destination with no outbound data flow beyond CSV export and the diagnostic ZIP?
+
+**Assumption:** No sync. The SQLite database is the final destination. The only outbound data flows are: CSV export from the dashboard, the diagnostic ZIP, and the traceability code itself (which can be printed/shared as a string). There is no replication, no REST push to external systems.
+
+**Solution:** No sync infrastructure needed. Document this explicitly so no one adds an outbound HTTP client expecting it to work.
+
+---
+
+## 18. Session Expiry — What Happens to In-Progress Work?
+
+**Question:** Sessions expire after 30 minutes of inactivity. If a user is mid-way through filling out a form (e.g., a supply entry or intake record) and the session expires, what happens to their unsaved data?
+
+**Assumption:** The frontend saves form state to `localStorage` as a draft. On session expiry the user is redirected to the login page. After re-authenticating, the draft is restored from `localStorage` so no data is lost. The server never receives partial writes — only complete, validated submissions.
+
+**Solution:** Leptos form components write to `localStorage` on every field change. A session-expiry interceptor on the API client detects 401 responses, stores the current route, redirects to login, and restores the route post-auth.
+
+---
+
+## 19. Encryption Key Management — How Is the Local Key Stored and Rotated?
+
+**Question:** Sensitive fields are encrypted at rest with a "locally managed key." Where is this key stored, how is it initialized on first run, and can it be rotated without data loss?
+
+**Assumption:** The key is a 256-bit AES key stored in a local key file (e.g., `data/keystore.bin`) outside the SQLite database, with file-system permissions restricting access to the process user. On first run the key is generated and written. Key rotation re-encrypts all sensitive fields in a single transaction and writes the new key atomically.
+
+**Solution:** `keystore` module: `init_key()` generates or loads the key. `encrypt(value)` / `decrypt(value)` use AES-256-GCM. `rotate_key(new_key)` wraps re-encryption in a SQLite transaction. Admins trigger rotation via `POST /admin/security/rotate-key`.
+
+---
+
+## 20. Address Book — Is It Per-User or Shared?
+
+**Question:** Users maintain a "local address book for shipping destinations." Is this address book private to each user, or is it shared across all staff at the facility?
+
+**Assumption:** The address book is per-user. Each staff member maintains their own list of shipping destinations. Administrators cannot view other users' address books. Addresses are encrypted at rest as sensitive fields.
+
+**Solution:** `address_book` table: `id`, `user_id`, `label`, `street`, `city`, `state`, `zip_plus4`, `phone` (masked), `created_at`. All queries filter by `user_id = session.user_id`.
+
+---
+
+## 21. CSV Export — What Data Is Exported and Who Can Export?
+
+**Question:** The dashboard supports CSV export for metrics. Does the export contain raw records (individual intake rows, check-in events) or aggregated metric summaries? And which roles can trigger an export?
+
+**Assumption:** The export contains aggregated metric summaries matching what is visible on the dashboard (rescue volume, adoption conversion rate, task completion rate, donations logged, inventory on hand) for the selected filter range. Raw record export is not included. Administrators and Auditors can export; Operations Staff cannot.
+
+**Solution:** `GET /reports/export?from=&to=&facilityId=&tags=` returns a CSV of aggregated metrics. Role check: `role IN (admin, auditor)`. CSV columns match the dashboard metric set.
+
+---
+
+## 22. Donations Logged Offline — What Is a Donation?
+
+**Question:** The dashboard metric "donations logged offline" is mentioned but the prompt doesn't describe a donation workflow. What does a donation represent — monetary, in-kind supplies, or both? Who logs it and what fields does it have?
+
+**Assumption:** Donations are in-kind supply donations (physical items brought to the facility), not monetary. They are logged by Operations Staff as a special intake type with a donor reference (name/org, anonymized if requested). The metric counts the number of donation intake records in the period.
+
+**Solution:** `intake_records.type` gains a `donation` variant. `intake_records.donor_ref` (nullable, encrypted) stores the donor identifier. Dashboard metric counts `type=donation` records in the selected period.
+
+---
+
+## 23. Transfer Queue — What Is a "Transfer" and What States Exist?
+
+**Question:** The home workspace includes a transfer queue, but transfer is not defined. Is a transfer movement between facilities, movement to an adopter, or both? What lifecycle states does a transfer follow?
+
+**Assumption:** A transfer is an operational movement of an intake record between internal facility zones or between facilities; adoption is a separate terminal intake status and not treated as a transfer. A transfer request moves through `queued | approved | in_transit | received | canceled`.
+
+**Solution:** Add `transfers` table: `id`, `intake_id`, `from_facility_id`, `to_facility_id`, `reason`, `status`, `requested_by`, `approved_by`, `departed_at`, `received_at`, `created_at`. Home workspace transfer queue reads open transfers (`queued/approved/in_transit`) and exceptions include stale `in_transit` records past SLA.
+
+---
+
+## 24. Task Completion Metric — What Counts as a "Task"?
+
+**Question:** Dashboard metrics include task completion rate, but "task" is undefined. Is it derived from inspections/check-ins/supply entries, or does the system have a dedicated task entity?
+
+**Assumption:** Task completion rate is calculated from a dedicated `tasks` entity to avoid conflating unrelated workflows. Tasks can optionally reference source records (inspection, check-in, supply entry) but are still first-class records with clear due/completed timestamps.
+
+**Solution:** Add `tasks` table: `id`, `facility_id`, `title`, `category`, `source_type`, `source_id`, `assignee_user_id`, `status` (`open|in_progress|completed|canceled`), `due_at`, `completed_at`, `created_at`. Metric formula: `completed_in_period / (completed_in_period + overdue_open_in_period)` and expose by filter range/region/tags.
+
+---
+
+## 25. Inventory on Hand — How Is It Computed?
+
+**Question:** The dashboard metric "inventory on hand" is required, but data origin is ambiguous. Is inventory derived from current `supply_entries.stock_status`, or from explicit stock movement records?
+
+**Assumption:** Inventory on hand should be computed from explicit stock movement records for auditability. `stock_status` on supply entries is a presentation snapshot, not the accounting source of truth.
+
+**Solution:** Add `stock_movements` table: `id`, `supply_entry_id`, `movement_type` (`intake|adjustment|allocation|transfer_out|transfer_in|disposal`), `quantity_delta`, `unit`, `reason`, `performed_by`, `created_at`. Inventory on hand for a scope = `SUM(quantity_delta)` grouped by supply item; `supply_entries.stock_status` is updated from movement aggregates.
+
+---
+
+## 26. Traceability Process Steps — What Exactly Are They?
+
+**Question:** Traceability records aggregate "process steps," but it is unclear whether steps are manual logs, automatic status transitions, inspection outcomes, or a mix.
+
+**Assumption:** Process steps are an append-only timeline combining: (1) system-generated transitions (intake status changes, transfer status changes), (2) linked inspection outcomes, and (3) explicit manual step notes authored by staff.
+
+**Solution:** Add `traceability_steps` table: `id`, `traceability_code_id`, `step_type` (`auto_transition|inspection_outcome|manual_note`), `source_type`, `source_id`, `step_label`, `details_json`, `occurred_at`, `created_by`. Traceability publish payload includes ordered steps plus linked inspection summaries for offline verification.
+
+---
+
+## 27. Account Lockout — What Are N and the Rolling Window?
+
+**Question:** Security requires account lockout after repeated failures in a rolling window, but the threshold values are not specified. What are `N` and the lockout/reset durations?
+
+**Assumption:** Lock account after 10 failed login attempts within 15 minutes. Lock duration is 15 minutes from the triggering attempt. Successful login resets the failure window.
+
+**Solution:** Add `auth_failures` table with timestamped failures and enforce lockout with `COUNT(*) WHERE username=? AND attempted_at > now()-15m`. Return `429` or `423` (project standard) with `retry_after_seconds` when locked.
+
+---
+
+## 28. Idempotency — Which Endpoints and What Window?
+
+**Question:** Workflow requires idempotency for retryable mutating operations, but prompt does not enumerate exact endpoints or dedup window.
+
+**Assumption:** Apply idempotency to high-risk create/submit endpoints (`/intake`, `/media/upload/complete`, `/traceability/:id/publish`, `/traceability/:id/retract`, `/checkin`) with a 10-minute dedup window.
+
+**Solution:** Store idempotency records keyed by `method + normalized_route + actor_id + idempotency_key`, persist response snapshot, and enforce middleware ordering so auth executes first. Replays within window return the original response.
+
+---
+
+## 29. User Registration — Is Self-Register Allowed or Admin-Only Provisioning?
+
+**Question:** Prompt says users sign in locally and have roles, but does not fully define how accounts are created. Is there a public registration endpoint, admin-only user creation, or both?
+
+**Assumption:** Support a controlled `POST /auth/register` endpoint for initial bootstrap (first Administrator creation only), then require Administrator-managed `POST /users` for ongoing account provisioning.
+
+**Solution:** Add bootstrap guard (`system_initialized` flag or first-user check):
+- If no users exist, `POST /auth/register` creates first admin and returns session.
+- After bootstrap, `POST /auth/register` returns 403/409 and account creation flows through admin-only `POST /users`.
