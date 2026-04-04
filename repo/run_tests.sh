@@ -63,6 +63,10 @@ echo "[Step 5] Slice 3 tests..."
 reset_db
 run_suite "S3-API-AddrBook" "API_tests/address_book_api_test.sh"
 
+echo "[Step 6] Slice 4 tests..."
+reset_db
+run_suite "S4-API-Intake" "API_tests/intake_api_test.sh"
+
 # Summary
 echo "========================================"
 if [ $TOTAL_FAIL -eq 0 ]; then

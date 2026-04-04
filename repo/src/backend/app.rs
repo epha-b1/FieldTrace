@@ -9,6 +9,8 @@ use crate::config::Config;
 use crate::middleware::{auth_guard, session, trace_id};
 use crate::modules::address_book::handlers as addr;
 use crate::modules::auth::handlers as auth;
+use crate::modules::inspections::handlers as insp;
+use crate::modules::intake::handlers as intake;
 use crate::modules::users::handlers as users;
 
 #[derive(Clone)]
@@ -39,6 +41,11 @@ pub async fn create_app(config: &Config) -> Router {
         .route("/auth/change-password", patch(auth::change_password))
         .route("/address-book", get(addr::list).post(addr::create))
         .route("/address-book/:id", patch(addr::update).delete(addr::delete))
+        .route("/intake", get(intake::list).post(intake::create))
+        .route("/intake/:id", get(intake::get_one))
+        .route("/intake/:id/status", patch(intake::update_status))
+        .route("/inspections", get(insp::list).post(insp::create))
+        .route("/inspections/:id/resolve", patch(insp::resolve))
         .layer(axum::middleware::from_fn(auth_guard::require_auth));
 
     // Admin routes — administrator role required

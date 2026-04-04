@@ -108,6 +108,24 @@ pub async fn delete_address(id: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+// ── Intake ───────────────────────────────────────────────────────────
+
+pub async fn list_intake() -> Result<Vec<IntakeResponse>, ApiError> {
+    let resp = Request::get("/intake").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+pub async fn create_intake(req: &IntakeRequest) -> Result<IntakeResponse, ApiError> {
+    let resp = Request::post("/intake").header("Content-Type", "application/json")
+        .body(serde_json::to_string(req).unwrap())
+        .map_err(|e| ApiError { status: 0, code: "REQUEST".into(), message: format!("{:?}", e) })?
+        .send().await.map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
 pub async fn change_password(current: &str, new_pw: &str) -> Result<(), ApiError> {
     let body = serde_json::json!({"current_password": current, "new_password": new_pw});
     let resp = Request::patch("/auth/change-password")

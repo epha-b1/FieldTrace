@@ -76,6 +76,54 @@ pub struct AddressRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// ── Intake DTOs ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntakeRequest {
+    pub intake_type: String,
+    pub details: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntakeResponse {
+    pub id: String,
+    pub facility_id: String,
+    pub intake_type: String,
+    pub status: String,
+    pub details: String,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusUpdateRequest {
+    pub status: String,
+}
+
+// ── Inspection DTOs ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectionRequest {
+    pub intake_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectionResponse {
+    pub id: String,
+    pub intake_id: String,
+    pub inspector_id: String,
+    pub status: String,
+    pub outcome_notes: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveInspectionRequest {
+    pub status: String,
+    pub outcome_notes: String,
+}
+
 pub struct AddressResponse {
     pub id: String,
     pub label: String,

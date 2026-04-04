@@ -3,6 +3,7 @@ use leptos::*;
 use crate::api::client;
 use crate::app::Page;
 use crate::pages::address_book::AddressBookPage;
+use crate::pages::intake::IntakePage;
 use fieldtrace_shared::UserResponse;
 
 #[component]
@@ -68,6 +69,7 @@ pub fn DashboardPage(
                 })}
             </div>
 
+            <IntakePage />
             <AddressBookPage />
 
             <div class="card">
