@@ -1,53 +1,79 @@
 #!/bin/bash
 #
-# Test orchestrator.
+# Test orchestrator — compose-project-agnostic.
 #
-# If the w2t52 stack is already up and healthy, we skip the build/up step and
-# just run the test suites against the running container. Otherwise we bring
-# the stack up (building if needed) and then run tests.
+# Detection order:
+#   1. If any docker container is already publishing port 8080 and its
+#      /health endpoint answers {"status":"ok"}, we reuse it via
+#      `docker exec <cid> ...`. This is the path the CI validator uses:
+#      it runs `docker compose up --build` (compose project name derived
+#      from the directory, e.g. "repo"), so `repo-api-1` is already on
+#      port 8080 by the time this script runs.
+#   2. Otherwise, try `docker compose -p w2t52 ps -q api`.
+#   3. Otherwise, start our own stack with `docker compose -p w2t52 up -d --build`.
+#
+# Tests run with `docker exec -T <cid> bash /app/...` in all three cases,
+# so the rest of the script never cares which compose project owns the
+# container or what it is named.
 #
 # DB is reset between suites so each suite starts clean.
 
 set -e
 
-PROJECT="w2t52"
-DC="docker compose -p $PROJECT"
+FALLBACK_PROJECT="w2t52"
 HEALTH_URL="http://localhost:8080/health"
 MAX_WAIT=120
 
-wait_healthy() {
-    local elapsed=0
-    while [ $elapsed -lt $MAX_WAIT ]; do
-        if $DC exec -T api wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"'; then
-            echo "      Ready (${elapsed}s)"
+# The container id we'll execute tests inside. Set by detect_or_start().
+API_CID=""
+
+# Probe the host's published 8080 and return 0 if /health responds.
+host_health_ok() {
+    curl -sf "$HEALTH_URL" 2>/dev/null | grep -q '"status"'
+}
+
+# Find a running container publishing host port 8080.
+find_container_on_8080() {
+    # docker ps with a publish filter returns every container advertising
+    # the port. We then confirm by inspecting the actual host bindings.
+    local ids
+    ids=$(docker ps -q --filter 'publish=8080')
+    for cid in $ids; do
+        local binding
+        binding=$(docker inspect --format \
+            '{{range $p, $conf := .NetworkSettings.Ports}}{{if eq $p "8080/tcp"}}{{range $conf}}{{.HostPort}}{{end}}{{end}}{{end}}' \
+            "$cid" 2>/dev/null)
+        if [ "$binding" = "8080" ]; then
+            echo "$cid"
             return 0
         fi
-        sleep 2; elapsed=$((elapsed + 2))
     done
-    echo "ERROR: API not healthy after ${MAX_WAIT}s"
-    $DC logs --tail 50 api
     return 1
 }
 
-is_stack_running() {
-    # Returns 0 if the api container is running AND answering /health.
-    # Portable: we ask docker compose for the running container id and then
-    # probe the health endpoint from inside it.
-    local cid
-    cid=$($DC ps -q api 2>/dev/null)
-    [ -z "$cid" ] && return 1
-    # docker inspect returns "running" only for live containers.
-    local state
-    state=$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null)
-    [ "$state" != "running" ] && return 1
-    # Final check: health endpoint responds.
-    $DC exec -T api wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"' || return 1
-    return 0
+# Wait for the target container's /health to respond. Uses `docker exec`
+# so it works even when the host publish binding is flaky.
+wait_healthy() {
+    local elapsed=0
+    while [ $elapsed -lt $MAX_WAIT ]; do
+        if docker exec -T "$API_CID" wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"'; then
+            echo "      Ready (${elapsed}s)"
+            return 0
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    echo "ERROR: API not healthy after ${MAX_WAIT}s"
+    docker logs --tail 50 "$API_CID" 2>&1 || true
+    return 1
 }
 
+# Reset the DB inside the target container, then wait for health.
 reset_db() {
-    $DC exec -T api rm -f /app/storage/app.db /app/storage/app.db-wal /app/storage/app.db-shm 2>/dev/null
-    $DC restart api >/dev/null 2>&1
+    docker exec -T "$API_CID" rm -f \
+        /app/storage/app.db /app/storage/app.db-wal /app/storage/app.db-shm \
+        2>/dev/null || true
+    docker restart "$API_CID" >/dev/null 2>&1
     sleep 3
     wait_healthy
 }
@@ -58,7 +84,7 @@ run_suite() {
     local name="$1" script="$2"
     echo "  [$name]..."
     local EXIT=0
-    $DC exec -T api bash "/app/$script" || EXIT=$?
+    docker exec -T "$API_CID" bash "/app/$script" || EXIT=$?
     if [ $EXIT -eq 0 ]; then
         echo "  $name: PASSED"
     else
@@ -67,17 +93,51 @@ run_suite() {
     fi
 }
 
-# ─── Step 1: bring the stack up if it isn't already ──────────────────
-echo "[Step 1] Checking stack status..."
-if is_stack_running; then
-    echo "      Stack already up and healthy — reusing existing containers"
-else
-    echo "      Stack is not running — starting (build if needed)..."
-    $DC up -d --build 2>&1 | tail -3
+# Resolve the target container — reuse a running one if present, otherwise
+# bring up our own stack.
+detect_or_start() {
+    # 1. Is something already serving :8080 on the host?
+    if host_health_ok; then
+        local cid
+        if cid=$(find_container_on_8080); then
+            API_CID="$cid"
+            local cname
+            cname=$(docker inspect --format '{{.Name}}' "$cid" 2>/dev/null | sed 's|^/||')
+            echo "      Reusing running container: $cname ($cid)"
+            return 0
+        fi
+    fi
+
+    # 2. Is our named project up?
+    local cid
+    cid=$(docker compose -p "$FALLBACK_PROJECT" ps -q api 2>/dev/null)
+    if [ -n "$cid" ]; then
+        local state
+        state=$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null)
+        if [ "$state" = "running" ]; then
+            API_CID="$cid"
+            echo "      Using $FALLBACK_PROJECT compose stack ($cid)"
+            return 0
+        fi
+    fi
+
+    # 3. Bring our own stack up.
+    echo "      No running API — starting $FALLBACK_PROJECT stack..."
+    docker compose -p "$FALLBACK_PROJECT" up -d --build 2>&1 | tail -3
     echo ""
     echo "[Step 2] Waiting for API..."
+    cid=$(docker compose -p "$FALLBACK_PROJECT" ps -q api 2>/dev/null)
+    if [ -z "$cid" ]; then
+        echo "ERROR: failed to start $FALLBACK_PROJECT stack"
+        return 1
+    fi
+    API_CID="$cid"
     wait_healthy
-fi
+}
+
+# ─── Step 1: pick a target container ─────────────────────────────────
+echo "[Step 1] Checking stack status..."
+detect_or_start
 
 echo "[Step 3] Slice 1 tests..."
 reset_db
