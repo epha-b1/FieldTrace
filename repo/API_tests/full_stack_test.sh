@@ -82,7 +82,7 @@ check "Chunk upload 200" "200" "$R"
 
 # Complete
 BODY=$(curl -s -b "$CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"abc123\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"intake\"}")
+  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"fullstackfp01234\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"intake\"}")
 EVIDENCE_ID=$(echo "$BODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -n "$EVIDENCE_ID" ] && { echo "PASS: Evidence complete"; PASS=$((PASS+1)); } || { echo "FAIL: Complete: $BODY"; FAIL=$((FAIL+1)); }
 
@@ -143,10 +143,13 @@ fi
 echo ""
 echo "━━━ Slice 7: Traceability ━━━"
 
-# Staff cannot create → 403
+# Policy (see README role matrix): staff CAN create traceability codes;
+# only auditor is blocked (tested in remediation + blockers suites). Here
+# we assert staff creation works and rely on the other suites for the
+# auditor 403.
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$CK2" -X POST "$BASE/traceability" \
   -H "Content-Type: application/json" -d '{"intake_id":null}')
-check "Staff → create traceability → 403" "403" "$R"
+check "Staff → create traceability → 201" "201" "$R"
 
 # Admin creates
 BODY=$(curl -s -b "$CK" -X POST "$BASE/traceability" -H "Content-Type: application/json" \

@@ -114,6 +114,10 @@ echo "[Step 10] Frontend draft + session-restore integration..."
 reset_db
 run_suite "FrontendDraft" "API_tests/frontend_draft_test.sh"
 
+echo "[Step 11] Acceptance boundary + exhaustive matrix..."
+reset_db
+run_suite "AcceptanceBoundary" "API_tests/acceptance_boundary_test.sh"
+
 # Summary
 echo "========================================"
 if [ $TOTAL_FAIL -eq 0 ]; then

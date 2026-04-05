@@ -26,7 +26,7 @@ RUN cargo build --release -p fieldtrace-backend
 # === Runtime stage ===
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
-    libsqlite3-0 wget curl ca-certificates bash unzip jq \
+    libsqlite3-0 sqlite3 wget curl ca-certificates bash unzip jq findutils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

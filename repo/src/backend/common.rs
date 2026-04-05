@@ -77,7 +77,10 @@ pub fn db_err<E: std::fmt::Display>(trace_id: &str) -> impl Fn(E) -> AppError + 
 }
 
 /// System-level (I/O, crypto, other) error sanitizer.
-pub fn system_err<E: std::fmt::Display>(trace_id: &str, context: &'static str) -> impl Fn(E) -> AppError + '_ {
+pub fn system_err<'a, E: std::fmt::Display>(
+    trace_id: &'a str,
+    context: &'static str,
+) -> impl Fn(E) -> AppError + 'a {
     let tid = trace_id.to_string();
     move |e| {
         tracing::error!(trace_id = %tid, context = %context, error = %e, "System error");

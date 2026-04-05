@@ -80,7 +80,11 @@ impl<W: Write> ZipWriter<W> {
 
     pub fn finish(mut self) -> IoResult<W> {
         let cd_start = self.offset;
-        for e in &self.entries {
+        // Take ownership of the entries vector so we can call the mutable
+        // helpers (write_u32, write_u16, write_all) inside the loop without
+        // conflicting with an outstanding immutable borrow of `self.entries`.
+        let entries = std::mem::take(&mut self.entries);
+        for e in &entries {
             // Central directory header
             self.write_u32(0x02014b50)?;
             self.write_u16(20)?;               // version made by
@@ -102,6 +106,7 @@ impl<W: Write> ZipWriter<W> {
             self.inner.write_all(&e.name)?;
             self.offset += e.name.len() as u64;
         }
+        let entries_len = entries.len() as u16;
         let cd_end = self.offset;
         let cd_size = (cd_end - cd_start) as u32;
 
@@ -109,8 +114,8 @@ impl<W: Write> ZipWriter<W> {
         self.write_u32(0x06054b50)?;
         self.write_u16(0)?;                    // disk number
         self.write_u16(0)?;                    // disk with CD
-        self.write_u16(self.entries.len() as u16)?;
-        self.write_u16(self.entries.len() as u16)?;
+        self.write_u16(entries_len)?;          // entries on this disk
+        self.write_u16(entries_len)?;          // total entries
         self.write_u32(cd_size)?;
         self.write_u32(cd_start as u32)?;
         self.write_u16(0)?;                    // comment length
