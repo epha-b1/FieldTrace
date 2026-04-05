@@ -12,7 +12,7 @@
 #   2. Otherwise, try `docker compose -p w2t52 ps -q api`.
 #   3. Otherwise, start our own stack with `docker compose -p w2t52 up -d --build`.
 #
-# Tests run with `docker exec -T <cid> bash /app/...` in all three cases,
+# Tests run with `docker exec <cid> bash /app/...` in all three cases,
 # so the rest of the script never cares which compose project owns the
 # container or what it is named.
 #
@@ -71,7 +71,7 @@ wait_healthy() {
             return 0
         fi
 
-        if [ -n "$API_CID" ] && docker exec -T "$API_CID" wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"'; then
+        if [ -n "$API_CID" ] && docker exec "$API_CID" wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"'; then
             echo "      Ready (${elapsed}s)"
             return 0
         fi
@@ -85,7 +85,7 @@ wait_healthy() {
 
 # Reset the DB inside the target container, then wait for health.
 reset_db() {
-    docker exec -T "$API_CID" rm -f \
+    docker exec "$API_CID" rm -f \
         /app/storage/app.db /app/storage/app.db-wal /app/storage/app.db-shm \
         2>/dev/null || true
     docker restart "$API_CID" >/dev/null 2>&1
@@ -99,7 +99,7 @@ run_suite() {
     local name="$1" script="$2"
     echo "  [$name]..."
     local EXIT=0
-    docker exec -T "$API_CID" bash "/app/$script" || EXIT=$?
+    docker exec "$API_CID" bash "/app/$script" || EXIT=$?
     if [ $EXIT -eq 0 ]; then
         echo "  $name: PASSED"
     else
