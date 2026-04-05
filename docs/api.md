@@ -138,15 +138,16 @@ Registration policy: `POST /auth/register` is allowed only before first account 
 
 ## Admin
 
-| Method | Path                       | Auth  | Description                       |
-| ------ | -------------------------- | ----- | --------------------------------- |
-| GET    | /admin/config              | admin | Get active config                 |
-| PATCH  | /admin/config              | admin | Update config (saves new version) |
-| GET    | /admin/config/versions     | admin | List last 10 versions             |
-| POST   | /admin/config/rollback/:id | admin | Restore a config version          |
-| POST   | /admin/diagnostics/export  | admin | Generate diagnostic ZIP           |
-| GET    | /admin/jobs                | admin | Job run history                   |
-| POST   | /admin/security/rotate-key | admin | Rotate encryption key             |
+| Method | Path                              | Auth  | Description                                                                              |
+| ------ | --------------------------------- | ----- | ---------------------------------------------------------------------------------------- |
+| GET    | /admin/config                     | admin | Get active config                                                                        |
+| PATCH  | /admin/config                     | admin | Update config (saves new version, keeps last 10)                                         |
+| GET    | /admin/config/versions            | admin | List last 10 versions                                                                    |
+| POST   | /admin/config/rollback/:id        | admin | Restore a config version                                                                 |
+| POST   | /admin/diagnostics/export         | admin | Generate real diagnostic ZIP (logs, metrics, config, audit summary). Returns download id |
+| GET    | /admin/diagnostics/download/:id   | admin | Download the ZIP package. Expires after 1 hour (background cleanup).                     |
+| GET    | /admin/jobs                       | admin | Job run history                                                                          |
+| POST   | /admin/security/rotate-key        | admin | Rotate AES-256-GCM key. Body: `{"new_key_hex": "..."}`. Re-encrypts every row transactionally. |
 
 ---
 
@@ -173,6 +174,36 @@ Registration policy: `POST /auth/register` is allowed only before first account 
 
 ## Idempotency Header
 
-Retryable mutating endpoints accept `Idempotency-Key` and deduplicate by:
+All mutating routes (`POST`/`PATCH`/`PUT`/`DELETE`) on the protected router
+accept an optional `Idempotency-Key` header. Deduplication scope:
 
-`method + normalized_route + actor_id + idempotency_key` (within configured window).
+`method + normalized_route + actor_id + idempotency_key`
+
+Window: **10 minutes**. On replay, the response body and status code from
+the original request are returned verbatim and an `Idempotent-Replay: true`
+header is set. Records are cleaned up opportunistically on each write.
+
+Cross-actor isolation: two different users sending the same key + route +
+body produce two distinct side effects — keys are namespaced by `actor_id`.
+
+## Role Matrix
+
+| Role               | Can do                                                                                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `administrator`    | All endpoints, including user management, key rotation, diagnostics, legal hold, account purge                                                        |
+| `operations_staff` | Intake/inspections/evidence/supply/checkin/address-book create + update. Cannot publish or retract traceability. Cannot access admin routes.          |
+| `auditor`          | **Read-only** across the board, plus CSV report/audit exports and `POST /traceability` / `publish` / `retract`. Cannot mutate any operational resource. |
+
+Enforcement is in-handler (`common::require_write_role` and
+`common::require_admin_or_auditor`) in addition to route-level
+`require_auth` / `require_admin` middleware.
+
+## Account Deletion Lifecycle
+
+1. `POST /account/delete` marks `users.deletion_requested_at = now()`. The
+   user retains full login access during the 7-day cooling-off window.
+2. `POST /account/cancel-deletion` clears the marker.
+3. The `account_deletion_purge` background job (every 1 hour) transactionally
+   deletes any user whose `deletion_requested_at` is older than 7 days,
+   anonymizing dependent audit log references and dropping sessions +
+   address book entries for that user.

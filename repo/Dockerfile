@@ -15,6 +15,10 @@ RUN rustup target add wasm32-unknown-unknown
 # Copy everything and build directly — no dep caching tricks
 COPY . .
 RUN cd src/frontend && trunk build
+# Run Rust unit tests for the backend crate as part of the build.
+# Includes tests for: common::CivilDateTime, crypto AES round-trip, error
+# envelope flattening, zip writer, traceability code checksum, supply parser.
+RUN cargo test --release -p fieldtrace-backend
 RUN cargo build --release -p fieldtrace-backend
 
 # === Runtime stage ===
@@ -34,6 +38,7 @@ RUN mkdir -p /app/storage
 ENV PORT=8080
 ENV DATABASE_URL="sqlite:///app/storage/app.db"
 ENV STATIC_DIR=/app/static
+ENV STORAGE_DIR=/app/storage
 ENV RUST_LOG=info
 EXPOSE 8080
 CMD ["fieldtrace-backend"]

@@ -126,6 +126,73 @@ pub async fn create_intake(req: &IntakeRequest) -> Result<IntakeResponse, ApiErr
     resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
 }
 
+// ── Inspections ──────────────────────────────────────────────────────
+
+pub async fn list_inspections() -> Result<Vec<InspectionResponse>, ApiError> {
+    let resp = Request::get("/inspections").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+// ── Evidence with filters ────────────────────────────────────────────
+
+pub async fn list_evidence(keyword: &str, tag: &str, from: &str, to: &str)
+    -> Result<Vec<EvidenceResponse>, ApiError>
+{
+    let mut q: Vec<String> = Vec::new();
+    if !keyword.is_empty() { q.push(format!("keyword={}", urlencode(keyword))); }
+    if !tag.is_empty() { q.push(format!("tag={}", urlencode(tag))); }
+    if !from.is_empty() { q.push(format!("from={}", urlencode(from))); }
+    if !to.is_empty() { q.push(format!("to={}", urlencode(to))); }
+    let path = if q.is_empty() { "/evidence".to_string() }
+               else { format!("/evidence?{}", q.join("&")) };
+    let resp = Request::get(&path).send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+fn urlencode(s: &str) -> String {
+    // Minimal percent-encoding for safe ASCII query values.
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || "-_.~".contains(c) {
+            out.push(c);
+        } else {
+            for b in c.to_string().bytes() {
+                out.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    out
+}
+
+// ── Reports ──────────────────────────────────────────────────────────
+
+pub async fn reports_summary() -> Result<serde_json::Value, ApiError> {
+    let resp = Request::get("/reports/summary").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+// ── Account lifecycle ────────────────────────────────────────────────
+
+pub async fn request_account_deletion() -> Result<serde_json::Value, ApiError> {
+    let resp = Request::post("/account/delete").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+pub async fn cancel_account_deletion() -> Result<serde_json::Value, ApiError> {
+    let resp = Request::post("/account/cancel-deletion").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
 pub async fn change_password(current: &str, new_pw: &str) -> Result<(), ApiError> {
     let body = serde_json::json!({"current_password": current, "new_password": new_pw});
     let resp = Request::patch("/auth/change-password")

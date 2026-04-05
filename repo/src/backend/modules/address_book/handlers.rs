@@ -4,6 +4,7 @@ use axum::{Extension, Json};
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::common::db_err;
 use crate::crypto;
 use crate::error::AppError;
 use crate::extractors::SessionUser;
@@ -23,8 +24,10 @@ fn validate_zip(zip: &str, tid: &str) -> Result<(), AppError> {
 
 pub async fn list(
     State(state): State<AppState>,
+    Extension(tid): Extension<TraceId>,
     Extension(user): Extension<SessionUser>,
 ) -> Result<Json<Vec<AddressResponse>>, AppError> {
+    let t = &tid.0;
     let rows = sqlx::query_as::<_, AddrRow>(
         "SELECT id, label, street_enc, city_enc, state_enc, zip_plus4, phone_enc, created_at \
          FROM address_book WHERE user_id = ? ORDER BY created_at",
@@ -32,9 +35,9 @@ pub async fn list(
     .bind(&user.user_id)
     .fetch_all(&state.db)
     .await
-    .map_err(|e| AppError::internal(e.to_string(), ""))?;
+    .map_err(db_err(t))?;
 
-    let c = crypto::Crypto::new(&state.config.encryption_key);
+    let c = state.crypto();
     Ok(Json(rows.into_iter().map(|r| to_response(&c, r)).collect()))
 }
 
@@ -47,7 +50,7 @@ pub async fn create(
     let t = &tid.0;
     validate_zip(&body.zip_plus4, t)?;
 
-    let c = crypto::Crypto::new(&state.config.encryption_key);
+    let c = state.crypto();
     let id = Uuid::new_v4().to_string();
 
     sqlx::query(
@@ -59,7 +62,11 @@ pub async fn create(
     .bind(c.encrypt(&body.state)).bind(&body.zip_plus4)
     .bind(c.encrypt(&body.phone))
     .execute(&state.db).await
-    .map_err(|e| AppError::internal(e.to_string(), t))?;
+    .map_err(db_err(t))?;
+
+    crate::modules::audit::write(
+        &state.db, &user.user_id, "address_book.create", "address_book", &id, t,
+    ).await;
 
     Ok((StatusCode::CREATED, Json(AddressResponse {
         id, label: body.label, street: body.street, city: body.city,
@@ -78,7 +85,7 @@ pub async fn update(
     let t = &tid.0;
     validate_zip(&body.zip_plus4, t)?;
 
-    let c = crypto::Crypto::new(&state.config.encryption_key);
+    let c = state.crypto();
     let res = sqlx::query(
         "UPDATE address_book SET label=?, street_enc=?, city_enc=?, state_enc=?, zip_plus4=?, phone_enc=?, updated_at=datetime('now') \
          WHERE id=? AND user_id=?",
@@ -87,11 +94,15 @@ pub async fn update(
     .bind(c.encrypt(&body.state)).bind(&body.zip_plus4).bind(c.encrypt(&body.phone))
     .bind(&addr_id).bind(&user.user_id)
     .execute(&state.db).await
-    .map_err(|e| AppError::internal(e.to_string(), t))?;
+    .map_err(db_err(t))?;
 
     if res.rows_affected() == 0 {
         return Err(AppError::not_found("Address not found or not yours", t));
     }
+
+    crate::modules::audit::write(
+        &state.db, &user.user_id, "address_book.update", "address_book", &addr_id, t,
+    ).await;
 
     Ok(Json(AddressResponse {
         id: addr_id, label: body.label, street: body.street, city: body.city,
@@ -110,21 +121,26 @@ pub async fn delete(
     let res = sqlx::query("DELETE FROM address_book WHERE id=? AND user_id=?")
         .bind(&addr_id).bind(&user.user_id)
         .execute(&state.db).await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     if res.rows_affected() == 0 {
         return Err(AppError::not_found("Address not found or not yours", t));
     }
+
+    crate::modules::audit::write(
+        &state.db, &user.user_id, "address_book.delete", "address_book", &addr_id, t,
+    ).await;
+
     Ok(Json(serde_json::json!({"message":"Deleted"})))
 }
 
 fn to_response(c: &crypto::Crypto, r: AddrRow) -> AddressResponse {
-    let phone = c.decrypt(&r.phone_enc);
+    let phone = c.try_decrypt(&r.phone_enc).unwrap_or_default();
     AddressResponse {
         id: r.id, label: r.label,
-        street: c.decrypt(&r.street_enc),
-        city: c.decrypt(&r.city_enc),
-        state: c.decrypt(&r.state_enc),
+        street: c.try_decrypt(&r.street_enc).unwrap_or_default(),
+        city: c.try_decrypt(&r.city_enc).unwrap_or_default(),
+        state: c.try_decrypt(&r.state_enc).unwrap_or_default(),
         zip_plus4: r.zip_plus4,
         phone_masked: crypto::mask_phone(&phone),
         created_at: r.created_at,

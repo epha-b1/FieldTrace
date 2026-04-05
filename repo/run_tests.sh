@@ -1,4 +1,13 @@
 #!/bin/bash
+#
+# Test orchestrator.
+#
+# If the w2t52 stack is already up and healthy, we skip the build/up step and
+# just run the test suites against the running container. Otherwise we bring
+# the stack up (building if needed) and then run tests.
+#
+# DB is reset between suites so each suite starts clean.
+
 set -e
 
 PROJECT="w2t52"
@@ -18,6 +27,22 @@ wait_healthy() {
     echo "ERROR: API not healthy after ${MAX_WAIT}s"
     $DC logs --tail 50 api
     return 1
+}
+
+is_stack_running() {
+    # Returns 0 if the api container is running AND answering /health.
+    # Portable: we ask docker compose for the running container id and then
+    # probe the health endpoint from inside it.
+    local cid
+    cid=$($DC ps -q api 2>/dev/null)
+    [ -z "$cid" ] && return 1
+    # docker inspect returns "running" only for live containers.
+    local state
+    state=$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null)
+    [ "$state" != "running" ] && return 1
+    # Final check: health endpoint responds.
+    $DC exec -T api wget -qO- "$HEALTH_URL" 2>/dev/null | grep -q '"status"' || return 1
+    return 0
 }
 
 reset_db() {
@@ -42,14 +67,20 @@ run_suite() {
     fi
 }
 
-# Step 1: Start
-echo "[Step 1] Starting containers..."
-$DC up -d --build 2>&1 | tail -3
-
-echo "[Step 2] Waiting for API..."
-wait_healthy
+# ─── Step 1: bring the stack up if it isn't already ──────────────────
+echo "[Step 1] Checking stack status..."
+if is_stack_running; then
+    echo "      Stack already up and healthy — reusing existing containers"
+else
+    echo "      Stack is not running — starting (build if needed)..."
+    $DC up -d --build 2>&1 | tail -3
+    echo ""
+    echo "[Step 2] Waiting for API..."
+    wait_healthy
+fi
 
 echo "[Step 3] Slice 1 tests..."
+reset_db
 run_suite "S1-Unit" "unit_tests/bootstrap_test.sh"
 run_suite "S1-API" "API_tests/health_api_test.sh"
 
@@ -66,6 +97,14 @@ run_suite "S3-API-AddrBook" "API_tests/address_book_api_test.sh"
 echo "[Step 6] Slice 4 tests..."
 reset_db
 run_suite "S4-API-Intake" "API_tests/intake_api_test.sh"
+
+echo "[Step 7] Slices 4-11 comprehensive tests..."
+reset_db
+run_suite "S4-11-Full" "API_tests/full_stack_test.sh"
+
+echo "[Step 8] Remediation suite (audit fixes)..."
+reset_db
+run_suite "Remediation" "API_tests/remediation_api_test.sh"
 
 # Summary
 echo "========================================"

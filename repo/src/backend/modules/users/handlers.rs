@@ -7,6 +7,7 @@ use password_hash::{rand_core::OsRng, SaltString};
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::common::db_err;
 use crate::error::AppError;
 use crate::middleware::trace_id::TraceId;
 use fieldtrace_shared::*;
@@ -23,7 +24,7 @@ pub async fn list_users(
     )
     .fetch_all(&state.db)
     .await
-    .map_err(|e| AppError::internal(e.to_string(), t))?;
+    .map_err(db_err(t))?;
 
     Ok(Json(
         rows.into_iter()
@@ -65,10 +66,12 @@ pub async fn create_user(
         .execute(&state.db)
         .await
         .map_err(|e| {
-            if e.to_string().contains("UNIQUE") {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE") {
                 AppError::conflict("Username already taken", t)
             } else {
-                AppError::internal(e.to_string(), t)
+                tracing::error!(trace_id = %t, error = %msg, "user insert failed");
+                AppError::internal("Internal server error", t)
             }
         })?;
 
@@ -99,7 +102,7 @@ pub async fn update_user(
             .bind(&user_id)
             .execute(&state.db)
             .await
-            .map_err(|e| AppError::internal(e.to_string(), t))?;
+            .map_err(db_err(t))?;
     }
     Ok(Json(serde_json::json!({"message": "User updated"})))
 }
@@ -116,7 +119,7 @@ pub async fn delete_user(
         .bind(&user_id)
         .execute(&state.db)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("User not found", t));
@@ -145,7 +148,10 @@ fn hash_pw(password: &str, tid: &str) -> Result<String, AppError> {
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| AppError::internal(format!("Hash error: {}", e), tid))
+        .map_err(|e| {
+            tracing::error!(trace_id = %tid, error = %e, "argon2 hash failure");
+            AppError::internal("Internal server error", tid)
+        })
 }
 
 #[derive(sqlx::FromRow)]

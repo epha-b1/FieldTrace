@@ -7,6 +7,7 @@ services:
       PORT: "8080"
       DATABASE_URL: "sqlite:///app/storage/app.db"
       STATIC_DIR: "/app/static"
+      STORAGE_DIR: "/app/storage"
       RUST_LOG: "info"
       ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
     healthcheck:

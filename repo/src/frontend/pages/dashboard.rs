@@ -3,7 +3,10 @@ use leptos::*;
 use crate::api::client;
 use crate::app::Page;
 use crate::pages::address_book::AddressBookPage;
+use crate::pages::evidence_search::EvidenceSearchPage;
 use crate::pages::intake::IntakePage;
+use crate::pages::reports::ReportsPage;
+use crate::pages::workspace::WorkspacePage;
 use fieldtrace_shared::UserResponse;
 
 #[component]
@@ -13,6 +16,7 @@ pub fn DashboardPage(
     set_user: WriteSignal<Option<UserResponse>>,
 ) -> impl IntoView {
     let (health, set_health) = create_signal(Option::<Result<String, String>>::None);
+    let (delete_msg, set_delete_msg) = create_signal(Option::<String>::None);
 
     spawn_local(async move {
         let result = client::check_health().await;
@@ -24,7 +28,6 @@ pub fn DashboardPage(
         let set_page = set_page;
         let set_user = set_user;
         spawn_local(async move {
-            // Wait a bit, then check session validity
             gloo_timers::future::sleep(std::time::Duration::from_secs(60)).await;
             if client::get_me().await.is_err() {
                 set_user.set(None);
@@ -32,6 +35,26 @@ pub fn DashboardPage(
             }
         });
     }
+
+    let request_delete = move |_| {
+        spawn_local(async move {
+            match client::request_account_deletion().await {
+                Ok(v) => set_delete_msg.set(Some(
+                    v.get("message").and_then(|m| m.as_str()).unwrap_or("Deletion requested").to_string(),
+                )),
+                Err(e) => set_delete_msg.set(Some(e.message)),
+            }
+        });
+    };
+
+    let cancel_delete = move |_| {
+        spawn_local(async move {
+            match client::cancel_account_deletion().await {
+                Ok(_) => set_delete_msg.set(Some("Deletion cancelled".into())),
+                Err(e) => set_delete_msg.set(Some(e.message)),
+            }
+        });
+    };
 
     view! {
         <div class="app-body">
@@ -67,17 +90,20 @@ pub fn DashboardPage(
                         <p><strong>"Role: "</strong>{u.role.clone()}</p>
                     </div>
                 })}
+                <div class="account-lifecycle">
+                    <h3>"Account Lifecycle"</h3>
+                    <p class="muted">"Requesting deletion starts a 7-day cooling-off window. You can cancel anytime during that period."</p>
+                    {move || delete_msg.get().map(|m| view! { <div class="msg msg-info">{m}</div> })}
+                    <button class="btn btn-danger" on:click=request_delete>"Request Account Deletion"</button>
+                    <button class="btn" on:click=cancel_delete>"Cancel Deletion"</button>
+                </div>
             </div>
 
+            <WorkspacePage />
+            <ReportsPage />
             <IntakePage />
+            <EvidenceSearchPage />
             <AddressBookPage />
-
-            <div class="card">
-                <h2>"Workspace"</h2>
-                <p style="color: var(--color-muted);">
-                    "Intake queue, pending inspections, and exceptions will appear here."
-                </p>
-            </div>
         </div>
     }
 }

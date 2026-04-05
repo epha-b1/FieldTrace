@@ -25,21 +25,25 @@ Runs on a single machine. No internet required. No external services.
 
 ## Module Breakdown
 
-| Module         | What it does                                                                          |
-| -------------- | ------------------------------------------------------------------------------------- |
-| `auth`         | Bootstrap registration, login, logout, session management, password hashing, lockout |
-| `users`        | User CRUD, profile, address book, account deletion                                    |
-| `intake`       | Intake records, status transitions                                                    |
-| `inspections`  | Inspection CRUD, outcomes                                                             |
-| `evidence`     | Chunked upload, watermark, retention, legal hold, immutability                        |
-| `supply`       | Parsing pipeline, color/size normalization, conflict detection                        |
-| `traceability` | Code generation, checksum, publish/retract, versioned events                          |
-| `checkin`      | Member records, check-in, anti-passback                                               |
-| `dashboard`    | Metrics aggregation, CSV export                                                       |
-| `admin`        | Config versioning, rollback, diagnostic ZIP, key rotation                             |
-| `audit`        | Append-only audit log                                                                 |
-| `jobs`         | Background tasks (session cleanup, evidence retention, account deletion, ZIP cleanup) |
-| `common`       | Session extractor, role guard, trace ID middleware, encryption service, error types   |
+| Module                   | What it does                                                                                                           |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `auth`                   | Register, login, logout, sessions, password hashing, lockout, account deletion request/cancel                           |
+| `users`                  | Admin user CRUD                                                                                                         |
+| `address_book`           | Per-user encrypted address entries                                                                                      |
+| `intake`                 | Intake records, state machine transitions (409 on invalid)                                                              |
+| `inspections`            | Inspection CRUD, resolve-once                                                                                           |
+| `evidence`               | Chunked upload, real watermark (`FAC01 MM/DD/YYYY hh:mm AM/PM`), retention, legal hold, immutability, keyword/tag/date search |
+| `supply`                 | Parsing pipeline, color/size normalization, `needs_review` conflict state                                               |
+| `traceability`           | Code generation (Luhn + real current date), checksum verify, publish/retract with mandatory comment                     |
+| `checkin`                | Member records, anti-passback (includes `retry_after_seconds` in 409), admin-only override                              |
+| `dashboard`              | Metrics aggregation with query filters, CSV export (Admin/Auditor only)                                                 |
+| `admin`                  | Config versioning + rollback, **real** diagnostic ZIP generation + download + 1h cleanup, **real** transactional key rotation |
+| `audit`                  | Append-only audit log + CSV export with sensitive fields redacted                                                       |
+| `common`                 | `db_err` / `system_err` sanitizers, `require_write_role`, `require_admin_or_auditor`, `CivilDateTime` formatter          |
+| `crypto`                 | AES-256-GCM with fallible `try_encrypt` / `try_decrypt`; live key held in `Arc<RwLock<Crypto>>` on `AppState` for rotation |
+| `jobs`                   | `session_cleanup` (5 min), `account_deletion_purge` (1 h), `diagnostics_cleanup` (10 min), `evidence_retention` (1 h)    |
+| `middleware::idempotency` | Auth-first idempotency — scope `method + matched_route + actor_id + key`, 10-minute window, replay sends `Idempotent-Replay: true` |
+| `zip`                    | Minimal PKZIP stored-method writer with CRC-32 (no external crate) used by diagnostics                                  |
 
 ---
 
@@ -86,12 +90,12 @@ Axum HTTP Server :8080
 
 ## Background Jobs
 
-| Job                    | Runs every | What it does                                           |
-| ---------------------- | ---------- | ------------------------------------------------------ |
-| Session cleanup        | 5 min      | Delete sessions inactive > 30 min                      |
-| Account deletion       | 1 day      | Hard-delete accounts past 7-day cooling-off            |
-| Evidence retention     | 1 day      | Delete unlinked, non-legal-hold evidence past 365 days |
-| Diagnostic ZIP cleanup | 1 hour     | Delete generated ZIPs older than 1 hour                |
+| Job                      | Runs every | What it does                                                                                                                |
+| ------------------------ | ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `session_cleanup`        | 5 min      | Delete sessions inactive > 30 min. Records run state to `job_metrics`.                                                      |
+| `account_deletion_purge` | 1 hour     | Transactionally hard-delete any user whose `deletion_requested_at` is > 7 days old; anonymizes `audit_logs.actor_id`, drops sessions + address book; rolls back on any failure. |
+| `diagnostics_cleanup`    | 10 min     | Removes `{storage}/diagnostics/*.zip` files older than 1 hour.                                                              |
+| `evidence_retention`     | 1 hour     | Records a run in `job_metrics` (deletion policy is placeholder — legal-hold rows never expire).                              |
 
 ---
 
@@ -124,4 +128,13 @@ Every error returns the same shape:
 }
 ```
 
-Codes used: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403), `NOT_FOUND` (404), `CONFLICT` (409), `INTERNAL_ERROR` (500)
+Codes used: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `FORBIDDEN` (403),
+`NOT_FOUND` (404), `CONFLICT` (409), `ACCOUNT_LOCKED` (429),
+`ANTI_PASSBACK` (409, with flattened `retry_after_seconds`),
+`INTERNAL_ERROR` (500).
+
+Internal database errors are sanitized — handlers call
+`common::db_err(trace_id)` which logs the full error with
+`tracing::error!(error = ..., trace_id = ...)` and returns a generic
+`"Internal server error"` message to the client. Argon2 hashing errors and
+filesystem errors use the same pattern.

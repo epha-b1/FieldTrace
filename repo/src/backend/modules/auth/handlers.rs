@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::app::AppState;
+use crate::common::db_err;
 use crate::error::AppError;
 use crate::extractors::SessionUser;
 use crate::middleware::trace_id::TraceId;
@@ -26,7 +27,7 @@ pub async fn register(
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
         .fetch_one(&state.db)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     if count.0 > 0 {
         return Err(AppError::conflict(
@@ -49,16 +50,18 @@ pub async fn register(
     .execute(&state.db)
     .await
     .map_err(|e| {
-        if e.to_string().contains("UNIQUE") {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE") {
             AppError::conflict("Username already taken", t)
         } else {
-            AppError::internal(e.to_string(), t)
+            tracing::error!(trace_id = %t, error = %msg, "register insert failed");
+            AppError::internal("Internal server error", t)
         }
     })?;
 
     let session_id = create_session(&state.db, &user_id)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     let user = UserResponse {
         id: user_id,
@@ -94,7 +97,7 @@ pub async fn login(
     .bind(&body.username)
     .fetch_optional(&state.db)
     .await
-    .map_err(|e| AppError::internal(e.to_string(), t))?;
+    .map_err(db_err(t))?;
 
     let user_row = match row {
         Some(u) => u,
@@ -117,7 +120,7 @@ pub async fn login(
 
     let session_id = create_session(&state.db, &user_row.id)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     let user = UserResponse {
         id: user_row.id,
@@ -180,7 +183,7 @@ pub async fn change_password(
         .bind(&session.user_id)
         .fetch_one(&state.db)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     if !verify_password(&body.current_password, &row.0) {
         return Err(AppError::unauthorized("Current password is incorrect", t));
@@ -194,7 +197,7 @@ pub async fn change_password(
         .bind(&session.user_id)
         .execute(&state.db)
         .await
-        .map_err(|e| AppError::internal(e.to_string(), t))?;
+        .map_err(db_err(t))?;
 
     // Invalidate other sessions
     let _ = sqlx::query("DELETE FROM sessions WHERE user_id = ? AND id != ?")
@@ -204,6 +207,73 @@ pub async fn change_password(
         .await;
 
     Ok(Json(serde_json::json!({"message": "Password changed"})))
+}
+
+// ── POST /account/delete ─────────────────────────────────────────────
+//
+// Marks the user for deletion. The user can still log in during the 7-day
+// cooling-off window; the background job purges the account after that.
+
+pub async fn request_account_deletion(
+    State(state): State<AppState>,
+    Extension(tid): Extension<TraceId>,
+    Extension(session): Extension<SessionUser>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = &tid.0;
+
+    // Idempotent: only set if not already requested.
+    let res = sqlx::query(
+        "UPDATE users SET deletion_requested_at = datetime('now') \
+         WHERE id = ? AND deletion_requested_at IS NULL",
+    )
+    .bind(&session.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err(t))?;
+
+    // Also write an audit trail entry.
+    crate::modules::audit::write(
+        &state.db, &session.user_id, "account.delete_requested",
+        "user", &session.user_id, t,
+    ).await;
+
+    Ok(Json(serde_json::json!({
+        "message": "Account deletion scheduled. You have 7 days to cancel before permanent removal.",
+        "cooling_off_days": 7,
+        "already_requested": res.rows_affected() == 0,
+    })))
+}
+
+// ── POST /account/cancel-deletion ───────────────────────────────────
+//
+// Clears the deletion request if within the cooling-off window.
+
+pub async fn cancel_account_deletion(
+    State(state): State<AppState>,
+    Extension(tid): Extension<TraceId>,
+    Extension(session): Extension<SessionUser>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = &tid.0;
+
+    let res = sqlx::query(
+        "UPDATE users SET deletion_requested_at = NULL \
+         WHERE id = ? AND deletion_requested_at IS NOT NULL",
+    )
+    .bind(&session.user_id)
+    .execute(&state.db)
+    .await
+    .map_err(db_err(t))?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::conflict("No pending deletion to cancel", t));
+    }
+
+    crate::modules::audit::write(
+        &state.db, &session.user_id, "account.delete_cancelled",
+        "user", &session.user_id, t,
+    ).await;
+
+    Ok(Json(serde_json::json!({"message": "Account deletion cancelled"})))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -224,7 +294,10 @@ fn hash_password(password: &str, tid: &str) -> Result<String, AppError> {
     argon2
         .hash_password(password.as_bytes(), &salt)
         .map(|h| h.to_string())
-        .map_err(|e| AppError::internal(format!("Hash error: {}", e), tid))
+        .map_err(|e| {
+            tracing::error!(trace_id = %tid, error = %e, "argon2 hash failure");
+            AppError::internal("Internal server error", tid)
+        })
 }
 
 fn verify_password(password: &str, hash: &str) -> bool {
@@ -252,7 +325,7 @@ async fn check_lockout(db: &SqlitePool, username: &str, tid: &str) -> Result<(),
     .bind(username)
     .fetch_one(db)
     .await
-    .map_err(|e| AppError::internal(e.to_string(), tid))?;
+    .map_err(db_err(tid))?;
 
     if count.0 >= 10 {
         return Err(AppError::locked(

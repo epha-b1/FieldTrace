@@ -1,5 +1,12 @@
 pub mod address_book;
+pub mod admin;
+pub mod audit;
 pub mod auth;
+pub mod checkin;
+pub mod dashboard;
+pub mod evidence;
 pub mod inspections;
 pub mod intake;
+pub mod supply;
+pub mod traceability;
 pub mod users;
