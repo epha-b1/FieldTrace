@@ -387,6 +387,17 @@ pub async fn rotate_key(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let t = &tid.0;
 
+    // Key rotation requires ENCRYPTION_KEY_FILE to be configured so the
+    // new key is durably persisted. Without it, a restart would revert to
+    // the old env-based key, making all rotated data unreadable.
+    if state.config.encryption_key_file.is_none() {
+        return Err(AppError::validation(
+            "Key rotation requires ENCRYPTION_KEY_FILE to be configured for durable key persistence. \
+             Set ENCRYPTION_KEY_FILE to a writable path before rotating.",
+            t,
+        ));
+    }
+
     // Validate new key upfront (no plaintext in logs).
     let new_crypto = Crypto::from_hex(&body.new_key_hex)
         .map_err(|_| AppError::validation("new_key_hex must be a 64-char hex string", t))?;

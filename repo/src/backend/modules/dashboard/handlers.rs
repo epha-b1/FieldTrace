@@ -166,12 +166,15 @@ async fn compute_metrics(
     )
     .await?;
 
+    // Adoption numerator: only animal records that reached "adopted" status.
+    // This ensures the adoption KPI is animal-scoped consistently.
     let mut adopted_binds = binds.clone();
     adopted_binds.push("adopted".into());
+    adopted_binds.push("animal".into());
     let adopted = count_with(
         &state.db,
         format!(
-            "SELECT COUNT(*) FROM intake_records WHERE {} AND status = ?",
+            "SELECT COUNT(*) FROM intake_records WHERE {} AND status = ? AND intake_type = ?",
             where_sql
         ),
         &adopted_binds,
@@ -264,7 +267,7 @@ pub async fn adoption_conversion(
         .fetch_one(&state.db)
         .await
         .map_err(db_err(t))?;
-    let adopted: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM intake_records WHERE status = 'adopted'")
+    let adopted: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM intake_records WHERE status = 'adopted' AND intake_type = 'animal'")
         .fetch_one(&state.db)
         .await
         .map_err(db_err(t))?;

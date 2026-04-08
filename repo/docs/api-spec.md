@@ -95,7 +95,7 @@ List addresses. Sensitive fields (street, city, phone) are masked in responses.
 ### POST /media/upload/complete
 - **Body**: `{ "upload_id": string, "fingerprint": string, "total_size": int, "exif_capture_time": string|null, "tags": string|null, "keyword": string|null }`
 - **Fingerprint verification**: Server computes SHA-256 from assembled file bytes. If the computed fingerprint does not match the client-provided `fingerprint`, returns `409 CONFLICT` with message "Fingerprint mismatch: server-computed fingerprint does not match client-provided value".
-- **Duration fail-safe**: For video/audio, if `duration_seconds` was 0 or negative at upload start, completion is rejected with `400 VALIDATION_ERROR`.
+- **Duration enforcement (server-side)**: For video/audio, the server extracts the actual duration from the assembled file bytes (MP4 `mvhd` atom or WAV `fmt`+`data` chunks). If the extracted duration exceeds the policy limit (video > 60s, audio > 120s), returns `400 VALIDATION_ERROR`. If the container format is unsupported or malformed and duration cannot be extracted, returns `400 VALIDATION_ERROR` with message "Cannot verify ... duration from uploaded file". This is an intentional fail-safe: the client-declared `duration_seconds` is **not** trusted for acceptance.
 - **Compression**: Applies deterministic compression policy before insert.
 
 ### GET /evidence
@@ -232,6 +232,10 @@ CSV export with same filter params as summary.
 ### POST /admin/account-purge
 ### POST /admin/retention-purge
 ### POST /admin/security/rotate-key
+- **Requires**: `ENCRYPTION_KEY_FILE` must be configured. Returns `400` if not set (durability enforcement).
+- **Body**: `{ "new_key_hex": "<64 hex chars>" }`
+- Decrypts all encrypted-at-rest fields, re-encrypts with new key, commits in one transaction.
+- New key is persisted atomically to the key file after DB commit.
 
 ## Error Envelope
 

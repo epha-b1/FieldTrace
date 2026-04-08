@@ -113,7 +113,7 @@ pub async fn update_status(
     let t = &tid.0;
     require_write_role(&user, t)?;
 
-    let current: (String,) = sqlx::query_as("SELECT status FROM intake_records WHERE id = ?")
+    let current: (String, String) = sqlx::query_as("SELECT status, intake_type FROM intake_records WHERE id = ?")
         .bind(&id).fetch_optional(&state.db).await
         .map_err(db_err(t))?
         .ok_or_else(|| AppError::not_found("Intake record not found", t))?;
@@ -122,6 +122,14 @@ pub async fn update_status(
     if !valid {
         return Err(AppError::conflict(
             format!("Invalid transition from '{}' to '{}'", current.0, body.status), t,
+        ));
+    }
+
+    // "adopted" is an animal-only status. Supply and donation records
+    // cannot be adopted — they follow different lifecycle paths.
+    if body.status == "adopted" && current.1 != "animal" {
+        return Err(AppError::validation(
+            format!("Only animal intake records can be adopted (this record is '{}')", current.1), t,
         ));
     }
 

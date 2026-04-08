@@ -225,12 +225,25 @@ This prevents silent data corruption or tampering during upload.
 
 ### Duration policy enforcement
 
-Video and audio duration limits are enforced via fail-safe:
+Video and audio duration limits (video <= 60s, audio <= 120s) are enforced
+**server-side from the uploaded file bytes** — the client-declared
+`duration_seconds` is not trusted for acceptance decisions.
 
-- **Upload start**: `duration_seconds` validated (video <= 60s, audio <= 120s)
-- **Upload complete**: Server re-checks stored `duration_seconds`. Video/audio
-  with `duration_seconds <= 0` is rejected to prevent bypass by omitting the
-  field. Photo uploads have no duration constraint.
+At `POST /media/upload/complete`, the server:
+
+1. Reads the assembled file and extracts the actual duration from the
+   container metadata:
+   - **MP4/MOV**: parses the `mvhd` atom for `timescale` and `duration`
+   - **WAV**: computes from the `fmt` chunk (sample rate, block align) and
+     `data` chunk size
+2. Compares extracted duration against the policy limit.
+3. If duration **exceeds the limit**: rejects with `400 VALIDATION_ERROR`.
+4. If duration **cannot be extracted** (unsupported or malformed container):
+   rejects with `400 VALIDATION_ERROR` — this is an intentional fail-safe
+   policy. Unsupported formats (MP3, FLAC, OGG, WebM/MKV, etc.) are
+   rejected for video/audio rather than silently accepted.
+
+Photo uploads have no duration constraint.
 
 ### Privacy preferences
 
@@ -300,8 +313,13 @@ Retries within the window return the original response body/status and a
 `POST /admin/security/rotate-key` with `{"new_key_hex": "<64 hex chars>"}`
 decrypts every encrypted-at-rest field, re-encrypts with the new key, and
 commits in a single SQLite transaction. The in-memory cipher is replaced
-only after commit. If `ENCRYPTION_KEY_FILE` is configured, the new key is
-atomically written there as well.
+only after commit.
+
+**Durability requirement:** Key rotation requires `ENCRYPTION_KEY_FILE` to
+be configured. Without it, the endpoint returns `400` because a restart
+would revert to the old env-based key, making all rotated data unreadable.
+When configured, the new key is atomically written to the file after DB
+commit. The Docker default sets `ENCRYPTION_KEY_FILE=/app/storage/encryption.key`.
 
 ### Evidence retention (365 days)
 
@@ -325,27 +343,30 @@ Enforcement happens in two places:
   immediately — integration tests use `max_age_days: 0` to drive a
   deterministic same-second sweep.
 
-### Local media compression
+### Storage budget policy (projected compression metadata)
 
-Every `POST /media/upload/complete` runs the payload size through
-`apply_compression_policy(media_type, original_bytes)` before insert.
-The policy is deterministic per media type:
+**Important:** The backend stores the **original uploaded file unchanged**
+on disk. Real media transcoding (JPEG re-encode, H.264, AAC) is NOT
+performed in-process — that requires a full media codec library (ffmpeg)
+which is outside the current dependency scope.
 
-| Media type | Target ratio | Floor (skip below) |
-| ---------- | ------------ | ------------------- |
-| `photo`    | 0.70         | 256 KiB             |
-| `video`    | 0.60         | 2 MiB               |
-| `audio`    | 0.50         | 128 KiB             |
-| other      | 1.00 (skip)  | —                   |
+Instead, `POST /media/upload/complete` computes a **projected post-compression
+size** using deterministic per-type ratios based on industry baselines:
 
-Files at or below the per-type floor pass through unchanged
-(`compression_applied = false`). Above the floor the row is persisted with
-`compressed_bytes`, `compression_ratio`, `compression_applied` populated,
-and `EvidenceResponse` carries the same three fields back to the client.
+| Media type | Projected ratio | Floor (skip below) | Basis |
+| ---------- | --------------- | ------------------- | ----- |
+| `photo`    | 0.70            | 256 KiB             | JPEG quality 80 |
+| `video`    | 0.60            | 2 MiB               | H.264 720p/2Mbps |
+| `audio`    | 0.50            | 128 KiB             | AAC-LC 96kbps |
+| other      | 1.00 (skip)     | —                   | — |
 
-A guard rejects any compression result that produced a `compressed_bytes >
-size_bytes` to prevent an upstream policy bug from letting oversized
-"compressed" payloads through.
+The `compressed_bytes` field in evidence records reflects this **budget
+projection** — the storage cost the facility should attribute after their
+offline re-encoding pipeline runs. The `compression_applied` flag
+indicates whether the projection differs from original size.
+
+Files at or below the per-type floor pass through unchanged. A guard
+rejects any result with `compressed_bytes > size_bytes`.
 
 ### Draft autosave and session-expiry restore
 
@@ -415,10 +436,11 @@ Admin can inspect the log stream via `GET /admin/logs` (last 200 rows).
 | 10 | Admin Config — versioning, rollback, diagnostic export, jobs metrics |
 | 11 | Security + Audit — append-only audit log, CSV export with [REDACTED] masking |
 | 12 | Final Polish — integrated UI, test orchestration |
+| 13 | Audit Hardening — server-side fingerprint verification (SHA-256), duration fail-safe enforcement, traceability steps visibility policy, privacy preferences (CRUD + user isolation), supply data surface (stock_status, media_references, review_summary), cookie `Secure` flag |
 
 ## Test Summary
 
-The orchestrator runs 9 suites:
+The orchestrator runs 13 steps across multiple suites:
 
 | Step | Suite              | Coverage                                                                 |
 | ---- | ------------------ | ------------------------------------------------------------------------ |
@@ -428,9 +450,11 @@ The orchestrator runs 9 suites:
 | 6    | S4-Intake          | State machine transitions + inspection resolve-once                      |
 | 7    | S4-11-Full         | Cross-slice comprehensive (evidence, supply, traceability, checkin, dashboard, admin, audit) |
 | 8    | Remediation        | Audit-report fixes (auditor matrix, object-level auth, idempotency, key rotation, diagnostics) |
-| 9    | **Blockers**       | Final acceptance: address-book auditor lockout, FK-safe purge, config cap + rollback, diagnostic snapshot content, structured_logs writes, sensitive-leak prevention |
-
-| 13   | AuditFixes       | Fingerprint integrity, duration fail-safe, traceability steps visibility, privacy preferences CRUD + isolation, supply new fields, cookie secure flag |
+| 9    | Blockers           | Final acceptance: address-book auditor lockout, FK-safe purge, config cap + rollback, diagnostic snapshot content, structured_logs writes, sensitive-leak prevention |
+| 10   | FrontendDraft      | Draft autosave, session-expiry route preservation, localStorage integration |
+| 11   | AcceptanceBoundary | Session 30-min inactivity, lockout rolling window, exhaustive admin route matrix, cross-user evidence controls |
+| 12   | RemediationRegression | ISS-01 through ISS-08 regression checks |
+| 13   | AuditFixes         | Fingerprint integrity, duration fail-safe, traceability steps visibility, privacy preferences CRUD + isolation, supply new fields, cookie secure flag |
 
 Rust unit tests run during `docker compose build` (cargo test --release):
 civil-date formatter, AES round-trip + tamper, error envelope flatten,

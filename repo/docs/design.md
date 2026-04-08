@@ -69,17 +69,26 @@ This prevents silent data corruption or tampering during upload.
 
 ### Duration Policy Enforcement
 
-Media duration limits are enforced as a **fail-safe** at two points:
+Media duration limits (video <= 60s, audio <= 120s) are derived **server-side from the
+uploaded file bytes**. The client-declared `duration_seconds` is used only for early
+rejection at upload-start; it is never trusted for final acceptance.
 
-1. **Upload start**: `duration_seconds` validated against limits (video <= 60s, audio <= 120s)
-2. **Upload complete**: Server re-checks the `duration_seconds` stored in the upload session:
-   - Video/audio with `duration_seconds <= 0`: rejected (prevents bypass by omitting duration)
-   - Video/audio exceeding limits: rejected
-   - Photo: no duration constraint
+At `upload_complete`, the server:
 
-Since reliable server-side media metadata extraction requires external dependencies (ffprobe),
-the system uses a **fail-safe** approach: untrusted (zero/negative) duration declarations are
-rejected rather than accepted.
+1. Reads the assembled file bytes
+2. Attempts to extract duration via pure byte-level container parsing:
+   - **MP4/MOV** (ISO BMFF): scans top-level atoms for `moov`, then parses `mvhd` for
+     `timescale` (u32) and `duration` (u32/u64). Duration = duration_field / timescale.
+   - **WAV** (RIFF/WAVE): parses `fmt ` chunk for sample_rate and block_align, then
+     `data` chunk size. Duration = data_size / (sample_rate × block_align).
+3. Enforces the policy:
+   - Extracted duration > limit → `400 VALIDATION_ERROR`
+   - Duration unextractable (unsupported format, malformed container) → `400 VALIDATION_ERROR`
+     ("Cannot verify ... duration from uploaded file")
+
+This **fail-safe** approach means: formats without reliable container-level duration metadata
+(MP3, FLAC, OGG, WebM/MKV) are rejected for video/audio. No external tools (ffprobe) are
+needed — the parsers operate on raw bytes with zero dependencies.
 
 ### Traceability Visibility Policy
 
@@ -124,6 +133,36 @@ Supply entries carry first-class fields for operational completeness:
 | `review_summary` | text | Short audit review note |
 
 Validated at creation: `stock_status` must be a recognized value (400 on invalid).
+
+## Intake Status Transitions and Adoption Semantics
+
+Intake records follow a type-aware state machine:
+
+```
+received → in_care → adopted (ANIMAL ONLY)
+received → in_care → transferred
+received → in_care → disposed
+received → in_stock → transferred
+received → in_stock → disposed
+```
+
+The `adopted` status is restricted to `intake_type = 'animal'`. Supply and
+donation records cannot be adopted — the endpoint returns `400 VALIDATION_ERROR`
+if this is attempted.
+
+The adoption conversion KPI (`/reports/adoption-conversion` and the dashboard
+summary) counts only `intake_type = 'animal' AND status = 'adopted'` in the
+numerator, with all animal records as the denominator. This ensures the metric
+is not skewed by non-animal records.
+
+## Storage Budget Policy (Compression Metadata)
+
+The backend stores original uploaded files unchanged on disk. Real media
+transcoding is NOT performed in-process. Instead, `compressed_bytes` reflects a
+**projected post-compression size** using per-type industry baselines (photo 0.70x,
+video 0.60x, audio 0.50x). This is metadata for storage budget planning, not
+an assertion that transcoding occurred. The `compression_applied` flag indicates
+whether the projection differs from original size.
 
 ## Frontend Architecture
 

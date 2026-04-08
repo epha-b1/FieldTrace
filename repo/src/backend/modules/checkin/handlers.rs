@@ -72,6 +72,15 @@ pub async fn checkin(
         .map_err(db_err(t))?;
     let (member_uuid,) = member.ok_or_else(|| AppError::not_found("Member not found", t))?;
 
+    // Validate override_reason if provided — must be non-empty.
+    if let Some(ref reason) = body.override_reason {
+        if reason.trim().is_empty() {
+            return Err(AppError::validation(
+                "override_reason must be non-empty when provided", t,
+            ));
+        }
+    }
+
     // Anti-passback check (unless override)
     if body.override_reason.is_none() {
         // Fetch the most recent checkin within the anti-passback window and

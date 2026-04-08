@@ -124,14 +124,12 @@ pub fn EvidenceUploadPage(user: ReadSignal<Option<UserResponse>>) -> impl IntoVi
                 }
             }
 
-            // Step 3: Generate fingerprint (simple hash of first+last bytes)
+            // Step 3: Compute SHA-256 fingerprint (must match backend server-side verification)
             let fingerprint = {
-                let mut h: u64 = 0xcbf29ce484222325; // FNV-1a offset
-                for &b in bytes.iter() {
-                    h ^= b as u64;
-                    h = h.wrapping_mul(0x100000001b3);
-                }
-                format!("{:016x}", h)
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                hex::encode(hasher.finalize())
             };
 
             // Step 4: Complete
@@ -191,10 +189,14 @@ pub fn EvidenceUploadPage(user: ReadSignal<Option<UserResponse>>) -> impl IntoVi
                         </div>
 
                         <div class="form-group">
-                            <label>"File"</label>
+                            <label>"Capture / Select File"</label>
                             <input type="file"
+                                accept="image/*,video/*,audio/*"
+                                capture="environment"
                                 on:change=on_file_change
                                 disabled=move || uploading.get() />
+                            <p class="muted">"On mobile devices, this will open the camera/microphone directly. \
+                                Max: photo 25 MB, video 60s/150 MB, audio 2 min/20 MB."</p>
                             {move || {
                                 let name = file_name.get();
                                 let size_info = file_bytes.get().map(|b| format!(" ({} bytes)", b.len())).unwrap_or_default();

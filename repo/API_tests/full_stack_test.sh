@@ -14,6 +14,8 @@ check() {
 
 # Minimal JPEG header (FF D8 FF E0 ...) base64-encoded for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
+# Compute SHA-256 fingerprint from the raw JPEG bytes for server-side verification
+JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
 
 echo "=== Comprehensive API Tests (Slices 4-11) ==="
 
@@ -85,7 +87,7 @@ check "Chunk upload 200" "200" "$R"
 
 # Complete
 BODY=$(curl -s -b "$CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"fullstackfp01234\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"intake\"}")
+  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"intake\"}")
 EVIDENCE_ID=$(echo "$BODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -n "$EVIDENCE_ID" ] && { echo "PASS: Evidence complete"; PASS=$((PASS+1)); } || { echo "FAIL: Complete: $BODY"; FAIL=$((FAIL+1)); }
 

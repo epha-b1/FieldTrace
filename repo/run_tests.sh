@@ -87,7 +87,10 @@ wait_healthy() {
 reset_db() {
     docker exec "$API_CID" rm -f \
         /app/storage/app.db /app/storage/app.db-wal /app/storage/app.db-shm \
+        /app/storage/encryption.key \
         2>/dev/null || true
+    # Also clean up any leftover upload chunks/assembled files
+    docker exec "$API_CID" rm -rf /app/storage/uploads 2>/dev/null || true
     docker restart "$API_CID" >/dev/null 2>&1
     sleep 3
     wait_healthy

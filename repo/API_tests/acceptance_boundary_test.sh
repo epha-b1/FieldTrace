@@ -50,6 +50,7 @@ sql() {
 
 # Minimal JPEG header for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
+JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
 
 echo "=== Acceptance Boundary + Matrix Suite ==="
 
@@ -180,7 +181,7 @@ uid=$(echo "$up" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
     -d "{\"upload_id\":\"$uid\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 ev=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-    -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"bndhash1234567890\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"\",\"keyword\":\"\"}")
+    -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"\",\"keyword\":\"\"}")
 EVID=$(echo "$ev" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 # Admin seeds an intake as target.
@@ -230,7 +231,7 @@ curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: appl
     -d "{\"upload_id\":\"$uid\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
     -H "Content-Type: application/json" \
-    -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"bndmissingfp01\",\"total_size\":4194304,\"exif_capture_time\":null,\"tags\":\"\",\"keyword\":\"\"}")
+    -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":4194304,\"exif_capture_time\":null,\"tags\":\"\",\"keyword\":\"\"}")
 check "Complete with missing chunk → 409" "409" "$R"
 
 # Duplicate chunk index is idempotent (completes twice but received_count stays 1).

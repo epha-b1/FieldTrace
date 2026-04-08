@@ -102,71 +102,153 @@ RBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content
 contains "Mismatch error contains 'Fingerprint mismatch'" "Fingerprint mismatch" "$RBODY"
 
 # ═══════════════════════════════════════════════════════════════════════
-# 2. DURATION FAIL-SAFE — server-side enforcement
+# 2. SERVER-SIDE DURATION ENFORCEMENT (derived from file bytes)
 # ═══════════════════════════════════════════════════════════════════════
 echo ""
-echo "━━━ 2. Duration policy enforcement ━━━"
+echo "━━━ 2. Server-side duration enforcement ━━━"
 
-# Video with valid duration (30s) — accepted at start
-R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" \
-  -H "Content-Type: application/json" \
-  -d '{"filename":"dur_ok.mp4","media_type":"video","total_size":1048576,"duration_seconds":30}')
-check "Video 30s at start → 200" "200" "$R"
+# ── Helper: build a minimal valid MP4 binary with a known duration ────
+# Structure: ftyp atom (16 bytes) + moov atom containing mvhd (version 0)
+# mvhd fields: version(1) flags(3) create(4) modify(4) timescale(4) duration(4)
+# Duration in seconds = duration_field / timescale
+# Args: $1=timescale $2=duration_field
+build_test_mp4() {
+    local ts="$1" dur="$2"
+    local tmp="/tmp/test_mp4_$$"
+    # ftyp atom: size=16 type=ftyp brand=isom
+    printf '\x00\x00\x00\x10ftypisom\x00\x00\x00\x00' > "$tmp"
+    # moov atom: size=36 (8 header + 28 mvhd atom)
+    printf '\x00\x00\x00\x24moov' >> "$tmp"
+    # mvhd atom: size=28 (8 header + 20 payload)
+    printf '\x00\x00\x00\x1cmvhd' >> "$tmp"
+    # version=0, flags=000, creation=0, modification=0
+    printf '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >> "$tmp"
+    # timescale (4 bytes big-endian)
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $(( (ts >> 24) & 0xFF )) $(( (ts >> 16) & 0xFF )) \
+      $(( (ts >> 8) & 0xFF )) $(( ts & 0xFF )) )" >> "$tmp"
+    # duration (4 bytes big-endian)
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $(( (dur >> 24) & 0xFF )) $(( (dur >> 16) & 0xFF )) \
+      $(( (dur >> 8) & 0xFF )) $(( dur & 0xFF )) )" >> "$tmp"
+    # base64 encode the whole thing
+    base64 -w0 "$tmp" 2>/dev/null || base64 "$tmp"
+    rm -f "$tmp"
+}
 
-# Video with over-limit duration (90s) — rejected at start
-R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" \
-  -H "Content-Type: application/json" \
-  -d '{"filename":"dur_bad.mp4","media_type":"video","total_size":1048576,"duration_seconds":90}')
-check "Video 90s at start → 400" "400" "$R"
+# ── Helper: build a minimal valid WAV binary with a known duration ────
+# Duration = data_chunk_size / (sample_rate × block_align)
+# Args: $1=sample_rate $2=num_samples (mono 16-bit)
+build_test_wav() {
+    local sr="$1" ns="$2"
+    local tmp="/tmp/test_wav_$$"
+    local block_align=2   # 1 channel × 16-bit / 8
+    local data_size=$((ns * block_align))
+    local byte_rate=$((sr * block_align))
+    local file_size=$((36 + data_size))
+    # RIFF header
+    printf 'RIFF' > "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $((file_size & 0xFF)) $(((file_size>>8) & 0xFF)) \
+      $(((file_size>>16) & 0xFF)) $(((file_size>>24) & 0xFF)))" >> "$tmp"
+    printf 'WAVE' >> "$tmp"
+    # fmt chunk (16 bytes payload)
+    printf 'fmt ' >> "$tmp"
+    printf '\x10\x00\x00\x00' >> "$tmp"  # chunk size = 16
+    printf '\x01\x00' >> "$tmp"          # PCM format
+    printf '\x01\x00' >> "$tmp"          # 1 channel
+    # sample rate (LE 32-bit)
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $((sr & 0xFF)) $(((sr>>8) & 0xFF)) \
+      $(((sr>>16) & 0xFF)) $(((sr>>24) & 0xFF)))" >> "$tmp"
+    # byte rate (LE 32-bit)
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $((byte_rate & 0xFF)) $(((byte_rate>>8) & 0xFF)) \
+      $(((byte_rate>>16) & 0xFF)) $(((byte_rate>>24) & 0xFF)))" >> "$tmp"
+    printf '\x02\x00' >> "$tmp"          # block align = 2
+    printf '\x10\x00' >> "$tmp"          # bits per sample = 16
+    # data chunk
+    printf 'data' >> "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+      $((data_size & 0xFF)) $(((data_size>>8) & 0xFF)) \
+      $(((data_size>>16) & 0xFF)) $(((data_size>>24) & 0xFF)))" >> "$tmp"
+    # Write zero audio samples
+    dd if=/dev/zero bs=1 count="$data_size" >> "$tmp" 2>/dev/null
+    base64 -w0 "$tmp" 2>/dev/null || base64 "$tmp"
+    rm -f "$tmp"
+}
 
-# Audio with over-limit duration (180s) — rejected at start
-R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" \
-  -H "Content-Type: application/json" \
-  -d '{"filename":"dur_bad.wav","media_type":"audio","total_size":1048576,"duration_seconds":180}')
-check "Audio 180s at start → 400" "400" "$R"
+# Helper to do a full upload-start-chunk-complete cycle
+# Args: $1=filename $2=media_type $3=chunk_b64 $4=total_size $5=duration_seconds
+# Prints: HTTP status code of complete call
+upload_and_complete() {
+    local fname="$1" mtype="$2" chunk_data="$3" tsize="$4" dur="$5"
+    local ub uid fp
+    ub=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
+      -d "{\"filename\":\"$fname\",\"media_type\":\"$mtype\",\"total_size\":$tsize,\"duration_seconds\":$dur}")
+    uid=$(echo "$ub" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
+    curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
+      -d "{\"upload_id\":\"$uid\",\"chunk_index\":0,\"data\":\"$chunk_data\"}" > /dev/null
+    # Compute SHA-256 fingerprint from the raw bytes
+    fp=$(echo -n "$chunk_data" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
+    curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
+      -H "Content-Type: application/json" \
+      -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"$fp\",\"total_size\":$tsize}"
+}
 
-# Video with duration=0 — accepted at start but REJECTED at complete (fail-safe)
-VBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
-  -d '{"filename":"dur_bypass.mp4","media_type":"video","total_size":1048576,"duration_seconds":0}')
-VID=$(echo "$VBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
+# ── 2a. Video with server-verifiable duration <= 60s → ACCEPTED ───────
+# Build MP4 with timescale=1000, duration_field=30000 → 30.0 seconds
+MP4_30S=$(build_test_mp4 1000 30000)
+R=$(upload_and_complete "ok30.mp4" "video" "$MP4_30S" 1048576 30)
+check "Video 30s (server-verified) → 201" "201" "$R"
 
-# Create a minimal MP4-like chunk (ftyp box magic)
-MP4_B64=$(printf '\x00\x00\x00\x20ftypisom\x00\x00\x00\x00isom\x00\x00\x00\x00' | base64 -w0 2>/dev/null || printf '\x00\x00\x00\x20ftypisom\x00\x00\x00\x00isom\x00\x00\x00\x00' | base64 2>/dev/null)
-curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$VID\",\"chunk_index\":0,\"data\":\"$MP4_B64\"}" > /dev/null
+# ── 2b. Video with server-verifiable duration > 60s → REJECTED ────────
+# Build MP4 with timescale=1000, duration_field=90000 → 90.0 seconds
+MP4_90S=$(build_test_mp4 1000 90000)
+R=$(upload_and_complete "bad90.mp4" "video" "$MP4_90S" 1048576 30)
+check "Video 90s (server-verified) → 400" "400" "$R"
 
-R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
-  -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$VID\",\"fingerprint\":\"abc12345abc12345\",\"total_size\":1048576}")
-check "Video duration=0 at complete → 400 (fail-safe)" "400" "$R"
+# ── 2c. Audio WAV with duration <= 120s → ACCEPTED ────────────────────
+# Build WAV: 8000 Hz × 80000 samples = 10.0 seconds
+WAV_10S=$(build_test_wav 8000 80000)
+R=$(upload_and_complete "ok10.wav" "audio" "$WAV_10S" 1048576 10)
+check "Audio WAV 10s (server-verified) → 201" "201" "$R"
 
-# Audio with duration=0 — also rejected at complete
-ABODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
-  -d '{"filename":"dur_bypass.wav","media_type":"audio","total_size":1048576,"duration_seconds":0}')
-AID=$(echo "$ABODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
+# ── 2d. Audio WAV with duration > 120s → REJECTED ────────────────────
+# Build WAV: 8000 Hz × 1040000 samples = 130.0 seconds
+WAV_130S=$(build_test_wav 8000 1040000)
+R=$(upload_and_complete "bad130.wav" "audio" "$WAV_130S" 3145728 130)
+check "Audio WAV 130s (server-verified) → 400" "400" "$R"
 
-WAV_B64=$(printf 'RIFF\x00\x00\x00\x00WAVE\x00\x00\x00\x00' | base64 -w0 2>/dev/null || printf 'RIFF\x00\x00\x00\x00WAVE\x00\x00\x00\x00' | base64 2>/dev/null)
-curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$AID\",\"chunk_index\":0,\"data\":\"$WAV_B64\"}" > /dev/null
+# ── 2e. Unverifiable video format → REJECTED (fail-safe) ─────────────
+# A file with ftyp but NO moov atom (so duration can't be extracted)
+MP4_NOMOOV=$(printf '\x00\x00\x00\x10ftypisom\x00\x00\x00\x00' | base64 -w0 2>/dev/null || printf '\x00\x00\x00\x10ftypisom\x00\x00\x00\x00' | base64 2>/dev/null)
+R=$(upload_and_complete "nomoov.mp4" "video" "$MP4_NOMOOV" 1048576 30)
+check "Unverifiable video (no moov) → 400 fail-safe" "400" "$R"
 
-R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
-  -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$AID\",\"fingerprint\":\"abc12345abc12345\",\"total_size\":1048576}")
-check "Audio duration=0 at complete → 400 (fail-safe)" "400" "$R"
+# ── 2f. Unverifiable audio format → REJECTED (fail-safe) ─────────────
+# ID3/MP3 header — no WAV, no MP4 container; duration unextractable
+MP3_B64=$(printf 'ID3\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' | base64 -w0 2>/dev/null || printf 'ID3\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' | base64 2>/dev/null)
+R=$(upload_and_complete "unverif.mp3" "audio" "$MP3_B64" 1048576 10)
+check "Unverifiable audio (MP3/ID3) → 400 fail-safe" "400" "$R"
 
-# Photo with duration=0 — should still succeed (no duration constraint)
+# ── 2g. Client duration_seconds no longer controls acceptance ─────────
+# Upload a 90-second MP4 but declare duration_seconds=30 at start.
+# Server derives 90s from bytes → must reject despite client claim.
+R=$(upload_and_complete "lie30.mp4" "video" "$MP4_90S" 1048576 30)
+check "Client lies duration=30 but file=90s → 400" "400" "$R"
+
+# ── 2h. Photo still has no duration constraint ────────────────────────
 PBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
   -d '{"filename":"photo_ok.jpg","media_type":"photo","total_size":1024,"duration_seconds":0}')
 PID=$(echo "$PBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
-
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$PID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
-
 PHOTO_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
   -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$PID\",\"fingerprint\":\"$PHOTO_FP\",\"total_size\":1024}")
-check "Photo duration=0 at complete → 201 (no constraint)" "201" "$R"
+check "Photo has no duration constraint → 201" "201" "$R"
 
 # ═══════════════════════════════════════════════════════════════════════
 # 3. TRACEABILITY STEPS — auditor visibility policy
@@ -324,6 +406,156 @@ contains "Cookie has Path=/" "Path=/" "$HEADERS"
 # (local dev mode). This is correct behavior — Secure is only added
 # in production HTTPS mode.
 not_contains "Cookie does not have Secure in HTTP mode" "; Secure" "$HEADERS"
+
+# ═══════════════════════════════════════════════════════════════════════
+# 7. ADOPTION SEMANTICS — type-aware status transitions + KPI
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "━━━ 7. Adoption semantics ━━━"
+
+# Create an animal intake, transition to in_care, then adopted → OK
+ABODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/intake" -H "Content-Type: application/json" \
+  -d '{"intake_type":"animal","details":"adoption test dog"}')
+ANIMAL_ID=$(echo "$ABODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+curl -s -b "$ADMIN_CK" -X PATCH "$BASE/intake/$ANIMAL_ID/status" \
+  -H "Content-Type: application/json" -d '{"status":"in_care"}' > /dev/null
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X PATCH "$BASE/intake/$ANIMAL_ID/status" \
+  -H "Content-Type: application/json" -d '{"status":"adopted"}')
+check "Animal in_care → adopted → 200" "200" "$R"
+
+# Create a supply intake, transition to in_stock, then try adopted → 400
+SBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/intake" -H "Content-Type: application/json" \
+  -d '{"intake_type":"supply","details":"adoption test supply"}')
+SUPPLY_ID=$(echo "$SBODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+curl -s -b "$ADMIN_CK" -X PATCH "$BASE/intake/$SUPPLY_ID/status" \
+  -H "Content-Type: application/json" -d '{"status":"in_stock"}' > /dev/null
+# Supply can't go to in_care first, but let's test a direct path:
+# received → in_care is valid for any type, then in_care → adopted should fail for supply
+SBODY2=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/intake" -H "Content-Type: application/json" \
+  -d '{"intake_type":"supply","details":"adoption test supply 2"}')
+SUPPLY_ID2=$(echo "$SBODY2" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -s -b "$ADMIN_CK" -X PATCH "$BASE/intake/$SUPPLY_ID2/status" \
+  -H "Content-Type: application/json" -d '{"status":"in_care"}' > /dev/null
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X PATCH "$BASE/intake/$SUPPLY_ID2/status" \
+  -H "Content-Type: application/json" -d '{"status":"adopted"}')
+check "Supply in_care → adopted → 400 (animal-only)" "400" "$R"
+
+# Donation cannot be adopted either
+DBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/intake" -H "Content-Type: application/json" \
+  -d '{"intake_type":"donation","details":"adoption test donation"}')
+DON_ID=$(echo "$DBODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+curl -s -b "$ADMIN_CK" -X PATCH "$BASE/intake/$DON_ID/status" \
+  -H "Content-Type: application/json" -d '{"status":"in_care"}' > /dev/null
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X PATCH "$BASE/intake/$DON_ID/status" \
+  -H "Content-Type: application/json" -d '{"status":"adopted"}')
+check "Donation in_care → adopted → 400 (animal-only)" "400" "$R"
+
+# Adoption KPI must exclude non-animal records from adopted count
+KPIBODY=$(curl -s -b "$ADMIN_CK" "$BASE/reports/adoption-conversion")
+# We have 1 animal adopted above. The total animals depends on test state,
+# but adopted count must be animal-scoped. Check that the endpoint returns.
+contains "Adoption KPI has total field" '"total"' "$KPIBODY"
+contains "Adoption KPI has adopted field" '"adopted"' "$KPIBODY"
+
+# ═══════════════════════════════════════════════════════════════════════
+# 8. ANTI-PASSBACK OVERRIDE — non-empty reason required
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "━━━ 8. Anti-passback override reason validation ━━━"
+
+# Create a member for checkin tests
+curl -s -b "$ADMIN_CK" -X POST "$BASE/members" -H "Content-Type: application/json" \
+  -d '{"member_id":"APB001","name":"Override Test"}' > /dev/null
+
+# Normal checkin works
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/checkin" \
+  -H "Content-Type: application/json" -d '{"member_id":"APB001"}')
+check "Normal checkin → 201" "201" "$R"
+
+# Override with valid non-empty reason → 201 (admin)
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/checkin" \
+  -H "Content-Type: application/json" -d '{"member_id":"APB001","override_reason":"Emergency access"}')
+check "Override with reason → 201" "201" "$R"
+
+# Override with empty reason → 400
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/checkin" \
+  -H "Content-Type: application/json" -d '{"member_id":"APB001","override_reason":""}')
+check "Override with empty reason → 400" "400" "$R"
+
+# Override with whitespace-only reason → 400
+R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/checkin" \
+  -H "Content-Type: application/json" -d '{"member_id":"APB001","override_reason":"   "}')
+check "Override with whitespace reason → 400" "400" "$R"
+
+# ═══════════════════════════════════════════════════════════════════════
+# 9. KEY ROTATION DURABILITY — requires ENCRYPTION_KEY_FILE
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "━━━ 9. Key rotation durability ━━━"
+
+# Key rotation should work when ENCRYPTION_KEY_FILE is configured
+# (docker-compose.yml sets it to /app/storage/encryption.key)
+# First create an address to encrypt
+curl -s -b "$ADMIN_CK" -X POST "$BASE/address-book" -H "Content-Type: application/json" \
+  -d '{"label":"RotTest","street":"1 Key St","city":"Crypto","state":"CA","zip_plus4":"90210-0000","phone":"555-KEY-0001"}' > /dev/null
+
+# Check if ENCRYPTION_KEY_FILE is set by attempting rotation
+NEW_KEY="aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+ROT_RESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/admin/security/rotate-key" -H "Content-Type: application/json" \
+  -d "{\"new_key_hex\":\"$NEW_KEY\"}")
+
+if echo "$ROT_RESP" | grep -q "ENCRYPTION_KEY_FILE"; then
+    # Key file not configured — rotation correctly rejected
+    echo "PASS: Rotation rejected without ENCRYPTION_KEY_FILE (durability enforced)"; PASS=$((PASS+1))
+elif echo "$ROT_RESP" | grep -q '"rotated_rows"'; then
+    # Key file is configured — rotation succeeded
+    echo "PASS: Key rotation succeeded with persisted key file"; PASS=$((PASS+1))
+
+    # Verify address still readable after rotation
+    ADDR_LIST=$(curl -s -b "$ADMIN_CK" "$BASE/address-book")
+    contains "Address readable after rotation" "RotTest" "$ADDR_LIST"
+
+    # Verify persisted_to_file is true
+    contains "Key persisted to file" '"persisted_to_file":true' "$ROT_RESP"
+else
+    echo "FAIL: Unexpected rotation response: $ROT_RESP"; FAIL=$((FAIL+1))
+fi
+
+# ═══════════════════════════════════════════════════════════════════════
+# 10. COMPRESSION POLICY — metadata projection is honest
+# ═══════════════════════════════════════════════════════════════════════
+echo ""
+echo "━━━ 10. Storage budget policy (compression metadata) ━━━"
+
+# Upload a 1 MiB photo — compression policy should project 0.70x
+CPBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
+  -d '{"filename":"budget_test.jpg","media_type":"photo","total_size":1048576,"duration_seconds":0}')
+CPID=$(echo "$CPBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
+curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
+  -d "{\"upload_id\":\"$CPID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
+CP_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+CPRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
+  -d "{\"upload_id\":\"$CPID\",\"fingerprint\":\"$CP_FP\",\"total_size\":1048576}")
+
+# compressed_bytes must be less than original (budget projection applied)
+COMP_BYTES=$(echo "$CPRESP" | grep -o '"compressed_bytes":[0-9]*' | cut -d':' -f2)
+if [ -n "$COMP_BYTES" ] && [ "$COMP_BYTES" -lt 1048576 ]; then
+    echo "PASS: Budget projection compressed_bytes ($COMP_BYTES) < original"; PASS=$((PASS+1))
+else
+    echo "FAIL: Budget projection unexpected: $COMP_BYTES"; FAIL=$((FAIL+1))
+fi
+
+# compression_applied must be true for large photo
+contains "compression_applied is true" '"compression_applied":true' "$CPRESP"
+
+# compression_ratio should be 0.7 for photo
+if echo "$CPRESP" | grep -qE '"compression_ratio":0\.7'; then
+    echo "PASS: Photo budget ratio is 0.7"; PASS=$((PASS+1))
+else
+    echo "FAIL: Budget ratio unexpected in: $CPRESP"; FAIL=$((FAIL+1))
+fi
 
 # ═══════════════════════════════════════════════════════════════════════
 # Summary

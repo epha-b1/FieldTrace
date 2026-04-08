@@ -26,6 +26,26 @@ check() {
 
 # Minimal JPEG header for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
+JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+# Build a minimal WAV file (1 second, 8000 Hz mono 16-bit) for audio tests.
+# This is a real RIFF/WAVE container the server can parse for duration.
+_build_wav_1s() {
+    local tmp="/tmp/blk_wav_$$"
+    local sr=8000 ns=8000 ba=2 ds=$((8000*2)) br=$((8000*2)) fs=$((36+8000*2))
+    printf 'RIFF' > "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((fs&0xFF)) $(((fs>>8)&0xFF)) $(((fs>>16)&0xFF)) $(((fs>>24)&0xFF)))" >> "$tmp"
+    printf 'WAVEfmt ' >> "$tmp"
+    printf '\x10\x00\x00\x00\x01\x00\x01\x00' >> "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((sr&0xFF)) $(((sr>>8)&0xFF)) $(((sr>>16)&0xFF)) $(((sr>>24)&0xFF)))" >> "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((br&0xFF)) $(((br>>8)&0xFF)) $(((br>>16)&0xFF)) $(((br>>24)&0xFF)))" >> "$tmp"
+    printf '\x02\x00\x10\x00data' >> "$tmp"
+    printf "$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' $((ds&0xFF)) $(((ds>>8)&0xFF)) $(((ds>>16)&0xFF)) $(((ds>>24)&0xFF)))" >> "$tmp"
+    dd if=/dev/zero bs=1 count="$ds" >> "$tmp" 2>/dev/null
+    base64 -w0 "$tmp" 2>/dev/null || base64 "$tmp"
+    rm -f "$tmp"
+}
+AUDIO_B64=$(_build_wav_1s)
+AUDIO_FP=$(echo -n "$AUDIO_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 
 echo "=== Blockers Suite: 6 fix categories ==="
 
@@ -99,7 +119,7 @@ UPID=$(echo "$UB" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$STAFF_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UPID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 EB=$(curl -s -b "$STAFF_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UPID\",\"fingerprint\":\"aabbccdd11223344\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"x\",\"keyword\":\"y\"}")
+  -d "{\"upload_id\":\"$UPID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"x\",\"keyword\":\"y\"}")
 EV_ID=$(echo "$EB" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 # Staff adds an address book entry (personal data — will be wiped)
@@ -339,7 +359,7 @@ upload_evidence_as_admin() {
       -d "{\"upload_id\":\"$uid\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
     local eb
     eb=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-      -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"retent01abcdef02\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"ret\",\"keyword\":\"$name\"}")
+      -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"ret\",\"keyword\":\"$name\"}")
     echo "$eb" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 
@@ -416,7 +436,7 @@ PHUID=$(echo "$PHB" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$PHUID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 PHRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$PHUID\",\"fingerprint\":\"compphoto1234567\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
+  -d "{\"upload_id\":\"$PHUID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
 
 # Compression metadata must be present
 for field in compressed_bytes compression_ratio compression_applied; do
@@ -448,7 +468,7 @@ SMUID=$(echo "$SMB" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$SMUID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 SMRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$SMUID\",\"fingerprint\":\"tinyphoto1234567\",\"total_size\":10000,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
+  -d "{\"upload_id\":\"$SMUID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":10000,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
 if echo "$SMRESP" | grep -q '"compression_applied":false'; then
     echo "PASS: tiny photo below floor NOT compressed"; PASS=$((PASS+1))
 else
@@ -460,9 +480,9 @@ AB=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type:
   -d '{"filename":"a.m4a","media_type":"audio","total_size":1048576,"duration_seconds":10}')
 AUID=$(echo "$AB" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$AUID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
+  -d "{\"upload_id\":\"$AUID\",\"chunk_index\":0,\"data\":\"$AUDIO_B64\"}" > /dev/null
 ARESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$AUID\",\"fingerprint\":\"audioclip1234567\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
+  -d "{\"upload_id\":\"$AUID\",\"fingerprint\":\"$AUDIO_FP\",\"total_size\":1048576,\"exif_capture_time\":null,\"tags\":\"c\",\"keyword\":\"c\"}")
 if echo "$ARESP" | grep -qE '"compression_ratio":0\.5'; then
     echo "PASS: audio compression ratio 0.5"; PASS=$((PASS+1))
 else

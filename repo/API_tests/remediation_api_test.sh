@@ -23,6 +23,7 @@ json_has() {
 
 # Minimal JPEG header for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
+JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
 
 echo "=== Remediation Suite: Security + Lifecycle + Idempotency ==="
 
@@ -110,7 +111,7 @@ UPLOAD_ID=$(echo "$UBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UPLOAD_ID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 EBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"abc12345def67890\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"foo\"}")
+  -d "{\"upload_id\":\"$UPLOAD_ID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"dog\",\"keyword\":\"foo\"}")
 EVIDENCE_ID=$(echo "$EBODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 if echo "$EBODY" | grep -qE '"watermark_text":"FAC01 [0-9]{2}/[0-9]{2}/[0-9]{4} [0-9]{2}:[0-9]{2} (AM|PM)"'; then
     echo "PASS: Watermark matches MM/DD/YYYY hh:mm AM/PM format"; PASS=$((PASS+1))
@@ -153,7 +154,7 @@ UID1=$(echo "$up1" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UID1\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UID1\",\"fingerprint\":\"deadbeef12345678\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"alpha\",\"keyword\":\"apple\"}" > /dev/null
+  -d "{\"upload_id\":\"$UID1\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"alpha\",\"keyword\":\"apple\"}" > /dev/null
 
 up2=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
   -d '{"filename":"f2.jpg","media_type":"photo","total_size":1024,"duration_seconds":0}')
@@ -161,7 +162,7 @@ UID2=$(echo "$up2" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UID2\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UID2\",\"fingerprint\":\"cafebabe87654321\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"beta\",\"keyword\":\"banana\"}" > /dev/null
+  -d "{\"upload_id\":\"$UID2\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":1024,\"exif_capture_time\":null,\"tags\":\"beta\",\"keyword\":\"banana\"}" > /dev/null
 
 KW_RESULT=$(curl -s -b "$ADMIN_CK" "$BASE/evidence?keyword=apple")
 if echo "$KW_RESULT" | grep -q "f1.jpg" && ! echo "$KW_RESULT" | grep -q "f2.jpg"; then

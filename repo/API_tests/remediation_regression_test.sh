@@ -34,6 +34,7 @@ echo "=== Remediation Regression Tests ==="
 
 # Minimal JPEG header for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
+JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
 
 # Setup: admin + staff
 curl -s -c "$CK" -X POST "$BASE/auth/register" -H "Content-Type: application/json" \
@@ -94,7 +95,7 @@ curl -s -b "$CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: applicatio
 
 # Complete
 EVID=$(curl -s -b "$CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UP_ID\",\"fingerprint\":\"abc123def456\",\"total_size\":100000}")
+  -d "{\"upload_id\":\"$UP_ID\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":100000}")
 EV_ID=$(echo "$EVID" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 # Link to valid target: should succeed
@@ -109,7 +110,7 @@ UP_ID2=$(echo "$UPS2" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UP_ID2\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 EVID2=$(curl -s -b "$CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UP_ID2\",\"fingerprint\":\"def456ghi789\",\"total_size\":50000}")
+  -d "{\"upload_id\":\"$UP_ID2\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":50000}")
 EV_ID2=$(echo "$EVID2" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
 
 # Link to non-existent target: should return 404
@@ -276,7 +277,7 @@ curl -s -b "$CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: applicatio
 # Now complete — should succeed for a 1-chunk upload
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$CK" -X POST "$BASE/media/upload/complete" \
   -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UP_IDM\",\"fingerprint\":\"abcdef012345\",\"total_size\":100000}")
+  -d "{\"upload_id\":\"$UP_IDM\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":100000}")
 check "Complete with all chunks present → 201" "201" "$R"
 
 # Upload happy path: start → chunk with real data → complete
@@ -290,7 +291,7 @@ for i in $(seq 0 $((TOTAL_H - 1))); do
     -d "{\"upload_id\":\"$UP_IDH\",\"chunk_index\":$i,\"data\":\"$JPEG_B64\"}" > /dev/null
 done
 HAPPY=$(curl -s -b "$CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
-  -d "{\"upload_id\":\"$UP_IDH\",\"fingerprint\":\"happy1234567\",\"total_size\":500000}")
+  -d "{\"upload_id\":\"$UP_IDH\",\"fingerprint\":\"$JPEG_FP\",\"total_size\":500000}")
 contains "Happy path complete returns evidence id" '"id"' "$HAPPY"
 contains "Happy path has watermark" "FAC01" "$HAPPY"
 
