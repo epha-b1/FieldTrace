@@ -90,9 +90,8 @@ UPLOAD_ID=$(echo "$UBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$UPLOAD_ID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
 
-# Compute the correct fingerprint from the JPEG data
-JPEG_RAW=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00')
-CORRECT_FP=$(echo -n "$JPEG_RAW" | sha256sum | cut -d' ' -f1)
+# Compute the correct fingerprint by decoding the same base64 the server receives
+CORRECT_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 
 # Happy path: correct fingerprint accepted
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
@@ -195,22 +194,28 @@ build_test_wav() {
     rm -f "$tmp"
 }
 
-# Helper to do a full upload-start-chunk-complete cycle
+# Helper to do a full upload-start-chunk-complete cycle.
+# Uses temp files for the JSON body to avoid shell argument-length limits
+# when chunk data is large (e.g. WAV files with many samples).
 # Args: $1=filename $2=media_type $3=chunk_b64 $4=total_size $5=duration_seconds
 # Prints: HTTP status code of complete call
 upload_and_complete() {
     local fname="$1" mtype="$2" chunk_data="$3" tsize="$4" dur="$5"
     local ub uid fp
+    local tmpbody="/tmp/af_body_$$"
     ub=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Type: application/json" \
       -d "{\"filename\":\"$fname\",\"media_type\":\"$mtype\",\"total_size\":$tsize,\"duration_seconds\":$dur}")
     uid=$(echo "$ub" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
+    # Write chunk JSON to temp file to avoid argument-length limits
+    printf '{"upload_id":"%s","chunk_index":0,"data":"%s"}' "$uid" "$chunk_data" > "$tmpbody"
     curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
-      -d "{\"upload_id\":\"$uid\",\"chunk_index\":0,\"data\":\"$chunk_data\"}" > /dev/null
+      -d @"$tmpbody" > /dev/null
     # Compute SHA-256 fingerprint from the raw bytes
     fp=$(echo -n "$chunk_data" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
     curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
       -H "Content-Type: application/json" \
       -d "{\"upload_id\":\"$uid\",\"fingerprint\":\"$fp\",\"total_size\":$tsize}"
+    rm -f "$tmpbody"
 }
 
 # ── 2a. Video with server-verifiable duration <= 60s → ACCEPTED ───────
@@ -226,15 +231,15 @@ R=$(upload_and_complete "bad90.mp4" "video" "$MP4_90S" 1048576 30)
 check "Video 90s (server-verified) → 400" "400" "$R"
 
 # ── 2c. Audio WAV with duration <= 120s → ACCEPTED ────────────────────
-# Build WAV: 8000 Hz × 80000 samples = 10.0 seconds
-WAV_10S=$(build_test_wav 8000 80000)
-R=$(upload_and_complete "ok10.wav" "audio" "$WAV_10S" 1048576 10)
+# Build WAV: 100 Hz × 1000 samples = 10.0 seconds (small file, avoids arg limits)
+WAV_10S=$(build_test_wav 100 1000)
+R=$(upload_and_complete "ok10.wav" "audio" "$WAV_10S" 4096 10)
 check "Audio WAV 10s (server-verified) → 201" "201" "$R"
 
 # ── 2d. Audio WAV with duration > 120s → REJECTED ────────────────────
-# Build WAV: 8000 Hz × 1040000 samples = 130.0 seconds
-WAV_130S=$(build_test_wav 8000 1040000)
-R=$(upload_and_complete "bad130.wav" "audio" "$WAV_130S" 3145728 130)
+# Build WAV: 100 Hz × 13000 samples = 130.0 seconds (small file)
+WAV_130S=$(build_test_wav 100 13000)
+R=$(upload_and_complete "bad130.wav" "audio" "$WAV_130S" 32768 130)
 check "Audio WAV 130s (server-verified) → 400" "400" "$R"
 
 # ── 2e. Unverifiable video format → REJECTED (fail-safe) ─────────────
@@ -261,7 +266,7 @@ PBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-Ty
 PID=$(echo "$PBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$PID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
-PHOTO_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+PHOTO_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 R=$(curl -s -o /dev/null -w "%{http_code}" -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" \
   -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$PID\",\"fingerprint\":\"$PHOTO_FP\",\"total_size\":1024}")
@@ -552,7 +557,7 @@ CPBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-T
 CPID=$(echo "$CPBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$CPID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
-CP_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+CP_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 CPRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$CPID\",\"fingerprint\":\"$CP_FP\",\"total_size\":1048576}")
 
@@ -587,7 +592,7 @@ LCBODY=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-T
 LCUID=$(echo "$LCBODY" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$LCUID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
-LC_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+LC_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 LCRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$LCUID\",\"fingerprint\":\"$LC_FP\",\"total_size\":1024}")
 LCEID=$(echo "$LCRESP" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -661,7 +666,7 @@ LINKUB=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/start" -H "Content-T
 LINKUID=$(echo "$LINKUB" | grep -o '"upload_id":"[^"]*"' | cut -d'"' -f4)
 curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/chunk" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$LINKUID\",\"chunk_index\":0,\"data\":\"$JPEG_B64\"}" > /dev/null
-LINK_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+LINK_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 LINKRESP=$(curl -s -b "$ADMIN_CK" -X POST "$BASE/media/upload/complete" -H "Content-Type: application/json" \
   -d "{\"upload_id\":\"$LINKUID\",\"fingerprint\":\"$LINK_FP\",\"total_size\":1024}")
 LINK_EID=$(echo "$LINKRESP" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)

@@ -26,7 +26,7 @@ check() {
 
 # Minimal JPEG header for chunk uploads
 JPEG_B64=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 -w0 2>/dev/null || printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | base64 2>/dev/null)
-JPEG_FP=$(printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00' | sha256sum | cut -d' ' -f1)
+JPEG_FP=$(echo -n "$JPEG_B64" | base64 -d 2>/dev/null | sha256sum | cut -d' ' -f1)
 # Build a minimal WAV file (1 second, 8000 Hz mono 16-bit) for audio tests.
 # This is a real RIFF/WAVE container the server can parse for duration.
 _build_wav_1s() {
