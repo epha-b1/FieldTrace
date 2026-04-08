@@ -17,7 +17,8 @@ pub async fn list(
     Extension(tid): Extension<TraceId>,
 ) -> Result<Json<Vec<SupplyResponse>>, AppError> {
     let rows = sqlx::query_as::<_, SupRow>(
-        "SELECT id, name, sku, canonical_size, canonical_color, price_cents, parse_status, parse_conflicts, created_at \
+        "SELECT id, name, sku, canonical_size, canonical_color, price_cents, parse_status, parse_conflicts, created_at, \
+                stock_status, media_references, review_summary \
          FROM supply_entries ORDER BY created_at DESC"
     ).fetch_all(&state.db).await
     .map_err(db_err(&tid.0))?;
@@ -26,6 +27,8 @@ pub async fn list(
         canonical_size: r.canonical_size, canonical_color: r.canonical_color,
         price_cents: r.price_cents, parse_status: r.parse_status,
         parse_conflicts: r.parse_conflicts, created_at: r.created_at,
+        stock_status: r.stock_status, media_references: r.media_references,
+        review_summary: r.review_summary,
     }).collect()))
 }
 
@@ -54,14 +57,27 @@ pub async fn create(
     let parse_status = if conflicts.is_empty() { "ok" } else { "needs_review" };
     let conflicts_json = serde_json::to_string(&conflicts).unwrap_or("{}".into());
 
+    // Validate stock_status
+    let valid_statuses = ["in_stock", "low_stock", "out_of_stock", "unknown"];
+    let stock_status = if valid_statuses.contains(&body.stock_status.as_str()) {
+        body.stock_status.clone()
+    } else {
+        return Err(AppError::validation(
+            format!("stock_status must be one of: {}", valid_statuses.join(", ")), t,
+        ));
+    };
+
     let id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO supply_entries (id, name, sku, raw_size, canonical_size, raw_color, canonical_color, price_cents, discount_cents, notes, parse_status, parse_conflicts, created_by) \
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        "INSERT INTO supply_entries (id, name, sku, raw_size, canonical_size, raw_color, canonical_color, \
+         price_cents, discount_cents, notes, parse_status, parse_conflicts, created_by, \
+         stock_status, media_references, review_summary) \
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     )
     .bind(&id).bind(&body.name).bind(&body.sku).bind(&body.size).bind(&canonical_size)
     .bind(&body.color).bind(&canonical_color).bind(body.price_cents).bind(body.discount_cents)
     .bind(&body.notes).bind(parse_status).bind(&conflicts_json).bind(&user.user_id)
+    .bind(&stock_status).bind(&body.media_references).bind(&body.review_summary)
     .execute(&state.db).await
     .map_err(db_err(t))?;
 
@@ -72,6 +88,7 @@ pub async fn create(
         id, name: body.name, sku: body.sku,
         canonical_size, canonical_color, price_cents: body.price_cents,
         parse_status: parse_status.into(), parse_conflicts: conflicts_json, created_at: String::new(),
+        stock_status, media_references: body.media_references, review_summary: body.review_summary,
     })))
 }
 
@@ -98,4 +115,5 @@ struct SupRow {
     id: String, name: String, sku: Option<String>,
     canonical_size: Option<String>, canonical_color: Option<String>,
     price_cents: Option<i64>, parse_status: String, parse_conflicts: String, created_at: String,
+    stock_status: String, media_references: String, review_summary: String,
 }

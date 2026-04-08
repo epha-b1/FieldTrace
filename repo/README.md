@@ -115,6 +115,7 @@ All environment variables are defined inline in `docker-compose.yml`. No `.env` 
 | ENCRYPTION_KEY | (auto-generated) | AES-256 encryption key (64 hex chars). If missing or placeholder, a random key is auto-generated for local dev |
 | ENCRYPTION_KEY_FILE | (unset) | Optional path to a file holding the hex key. If set, takes precedence over `ENCRYPTION_KEY` and is written to on `/admin/security/rotate-key` |
 | FACILITY_CODE | FAC01 | Facility code used in watermarks and traceability codes. Defaults to the DB seed value |
+| COOKIE_SECURE | false | When `true`, adds the `Secure` attribute to session cookies (HTTPS-only). Set to `true` in production |
 
 ## Role matrix (enforced server-side)
 
@@ -214,6 +215,51 @@ Plus manual operator notes via `POST /traceability/:id/steps` (admin/staff only)
 
 Retrieve via `GET /traceability/:id/steps` — returns the ordered list
 as `TraceStepResponse` rows.
+
+### Evidence fingerprint verification
+
+At `POST /media/upload/complete`, the server computes SHA-256 from the
+assembled file bytes and compares it against the client-provided
+`fingerprint`. If they differ, the upload is rejected with `409 CONFLICT`.
+This prevents silent data corruption or tampering during upload.
+
+### Duration policy enforcement
+
+Video and audio duration limits are enforced via fail-safe:
+
+- **Upload start**: `duration_seconds` validated (video <= 60s, audio <= 120s)
+- **Upload complete**: Server re-checks stored `duration_seconds`. Video/audio
+  with `duration_seconds <= 0` is rejected to prevent bypass by omitting the
+  field. Photo uploads have no duration constraint.
+
+### Privacy preferences
+
+Users can manage their privacy preferences via the profile page:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/profile/privacy-preferences` | GET | Read own preferences (lazy-initialized with defaults) |
+| `/profile/privacy-preferences` | PATCH | Update own preferences (partial update supported) |
+
+Preferences: `show_email` (default: true), `show_phone` (default: false),
+`allow_audit_log_export` (default: true), `allow_data_sharing` (default: false).
+
+Each user's preferences are isolated — updating one user's settings does
+not affect any other user.
+
+### Traceability steps visibility
+
+`GET /traceability/:id/steps` enforces the same visibility policy as the
+list endpoint: auditors can only view steps for **published** codes. Draft
+and retracted codes return `403 FORBIDDEN` for auditor-role users.
+Admin and staff can view steps regardless of code status.
+
+### Cookie hardening
+
+Session cookies include `HttpOnly`, `SameSite=Strict`, `Path=/`, and
+`Max-Age=1800`. When `COOKIE_SECURE=true` is set (recommended for
+production HTTPS deployments), the `Secure` attribute is also added so
+browsers only transmit the cookie over encrypted connections.
 
 ### Account deletion (cooling-off + FK-safe anonymization)
 
@@ -383,6 +429,8 @@ The orchestrator runs 9 suites:
 | 7    | S4-11-Full         | Cross-slice comprehensive (evidence, supply, traceability, checkin, dashboard, admin, audit) |
 | 8    | Remediation        | Audit-report fixes (auditor matrix, object-level auth, idempotency, key rotation, diagnostics) |
 | 9    | **Blockers**       | Final acceptance: address-book auditor lockout, FK-safe purge, config cap + rollback, diagnostic snapshot content, structured_logs writes, sensitive-leak prevention |
+
+| 13   | AuditFixes       | Fingerprint integrity, duration fail-safe, traceability steps visibility, privacy preferences CRUD + isolation, supply new fields, cookie secure flag |
 
 Rust unit tests run during `docker compose build` (cargo test --release):
 civil-date formatter, AES round-trip + tamper, error envelope flatten,

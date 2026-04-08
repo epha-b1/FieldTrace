@@ -196,6 +196,10 @@ echo "[Step 12] Remediation regression (ISS-01 through ISS-08)..."
 reset_db
 run_suite "RemediationRegression" "API_tests/remediation_regression_test.sh"
 
+echo "[Step 13] Audit fixes verification..."
+reset_db
+run_suite "AuditFixes" "API_tests/audit_fixes_test.sh"
+
 # Summary
 echo "========================================"
 if [ $TOTAL_FAIL -eq 0 ]; then

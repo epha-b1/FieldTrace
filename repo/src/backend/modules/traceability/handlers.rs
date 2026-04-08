@@ -209,22 +209,31 @@ pub async fn verify_code(Path(code_str): Path<String>) -> Json<serde_json::Value
 }
 
 // GET /traceability/:id/steps — ordered append-only timeline for a code.
+// Visibility policy: auditors can only view steps for published codes,
+// consistent with the list endpoint filter.
 pub async fn list_steps(
     State(state): State<AppState>,
     Extension(tid): Extension<TraceId>,
+    Extension(user): Extension<SessionUser>,
     Path(code_id): Path<String>,
 ) -> Result<Json<Vec<TraceStepResponse>>, AppError> {
     let t = &tid.0;
-    // Verify the code exists first so we return 404 cleanly instead of
-    // silently returning an empty timeline.
-    let exists: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM traceability_codes WHERE id = ?")
+    // Verify the code exists and check visibility policy.
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT id, status FROM traceability_codes WHERE id = ?")
             .bind(&code_id)
             .fetch_optional(&state.db)
             .await
             .map_err(db_err(t))?;
-    if exists.is_none() {
-        return Err(AppError::not_found("Traceability code not found", t));
+    let (_, status) = row.ok_or_else(|| AppError::not_found("Traceability code not found", t))?;
+
+    // Auditor visibility: only published codes' steps are accessible.
+    // Non-published/retracted codes return 403 for auditors (consistent
+    // with list endpoint filtering them out entirely).
+    if user.role == "auditor" && status != "published" {
+        return Err(AppError::forbidden(
+            "Auditors can only view steps for published traceability codes", t,
+        ));
     }
 
     let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(

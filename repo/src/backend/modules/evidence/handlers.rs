@@ -113,9 +113,9 @@ pub async fn upload_start(
     }
     let id = Uuid::new_v4().to_string();
     let total_chunks = (body.total_size + (2 * 1024 * 1024) - 1) / (2 * 1024 * 1024);
-    sqlx::query("INSERT INTO upload_sessions (id, filename, media_type, total_chunks, uploader_id) VALUES (?,?,?,?,?)")
+    sqlx::query("INSERT INTO upload_sessions (id, filename, media_type, total_chunks, uploader_id, duration_seconds) VALUES (?,?,?,?,?,?)")
         .bind(&id).bind(&body.filename).bind(&body.media_type)
-        .bind(total_chunks).bind(&user.user_id)
+        .bind(total_chunks).bind(&user.user_id).bind(body.duration_seconds)
         .execute(&state.db).await
         .map_err(db_err(t))?;
     Ok(Json(UploadStartResponse { upload_id: id, chunk_size_bytes: 2 * 1024 * 1024, total_chunks }))
@@ -255,13 +255,43 @@ pub async fn upload_complete(
         return Err(AppError::validation("Invalid fingerprint format", t));
     }
 
-    let session: Option<(String, String, i64, String)> = sqlx::query_as(
-        "SELECT filename, media_type, total_chunks, received_chunks FROM upload_sessions WHERE id = ? AND uploader_id = ?"
+    let session: Option<(String, String, i64, String, i64)> = sqlx::query_as(
+        "SELECT filename, media_type, total_chunks, received_chunks, duration_seconds FROM upload_sessions WHERE id = ? AND uploader_id = ?"
     ).bind(&body.upload_id).bind(&user.user_id)
         .fetch_optional(&state.db).await
         .map_err(db_err(t))?;
 
-    let (filename, media_type, total, received_json) = session.ok_or_else(|| AppError::not_found("Upload session not found", t))?;
+    let (filename, media_type, total, received_json, declared_duration) = session.ok_or_else(|| AppError::not_found("Upload session not found", t))?;
+
+    // Fail-safe duration enforcement: for video/audio, the server rejects
+    // uploads where duration was not declared (<=0) or exceeds the policy
+    // limit. This prevents bypass by omitting or falsifying the client
+    // duration field. The declared value was already validated at
+    // upload_start, but we re-check here to close the window between
+    // start and complete.
+    match media_type.as_str() {
+        "video" => {
+            if declared_duration <= 0 {
+                return Err(AppError::validation(
+                    "Video duration must be declared at upload start (duration_seconds > 0)", t,
+                ));
+            }
+            if declared_duration > MAX_VIDEO_SECONDS {
+                return Err(AppError::validation("Video exceeds 60 seconds", t));
+            }
+        }
+        "audio" => {
+            if declared_duration <= 0 {
+                return Err(AppError::validation(
+                    "Audio duration must be declared at upload start (duration_seconds > 0)", t,
+                ));
+            }
+            if declared_duration > MAX_AUDIO_SECONDS {
+                return Err(AppError::validation("Audio exceeds 2 minutes", t));
+            }
+        }
+        _ => {} // photo — no duration constraint
+    }
     let received: Vec<i64> = serde_json::from_str(&received_json).unwrap_or_default();
     if received.len() as i64 != total {
         return Err(AppError::conflict(
@@ -283,8 +313,11 @@ pub async fn upload_complete(
     }
 
     let assembled_path = format!("{}/uploads/{}_final", state.config.storage_dir, body.upload_id);
+    let server_fingerprint: String;
     {
+        use sha2::{Sha256, Digest};
         use std::io::Write;
+        let mut hasher = Sha256::new();
         let mut out = std::fs::File::create(&assembled_path).map_err(|e| {
             tracing::error!(trace_id = %t, error = %e, "Failed to create assembled file");
             AppError::internal("Storage error", t)
@@ -295,11 +328,25 @@ pub async fn upload_complete(
                 tracing::error!(trace_id = %t, error = %e, chunk = idx, "Failed to read chunk");
                 AppError::internal("Storage error", t)
             })?;
+            hasher.update(&data);
             out.write_all(&data).map_err(|e| {
                 tracing::error!(trace_id = %t, error = %e, "Failed to write assembled data");
                 AppError::internal("Storage error", t)
             })?;
         }
+        server_fingerprint = hex::encode(hasher.finalize());
+    }
+
+    // Server-side fingerprint integrity check: compare computed hash
+    // against the client-provided fingerprint. Mismatch means data was
+    // corrupted or tampered in transit.
+    if !body.fingerprint.eq_ignore_ascii_case(&server_fingerprint) {
+        // Clean up the assembled file on mismatch
+        let _ = std::fs::remove_file(&assembled_path);
+        return Err(AppError::conflict(
+            "Fingerprint mismatch: server-computed fingerprint does not match client-provided value",
+            t,
+        ));
     }
 
     // Clean up individual chunk files now that assembly is done

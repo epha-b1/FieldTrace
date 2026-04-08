@@ -36,13 +36,28 @@ pub fn SupplyPage() -> impl IntoView {
                     let needs_review = s.parse_status == "needs_review";
                     let refresh = refresh.clone();
                     let status_tag = if needs_review { "tag-error" } else { "tag-ok" };
+                    let stock_tag = match s.stock_status.as_str() {
+                        "in_stock" => "tag-ok",
+                        "low_stock" => "tag-warn",
+                        "out_of_stock" => "tag-error",
+                        _ => "tag-info",
+                    };
                     view! {
                         <div class="list-item">
                             <strong>{s.name.clone()}</strong>
                             {s.sku.clone().map(|sku| view! { <span class="muted">" SKU: "{sku}</span> })}
                             <span class={format!("tag {}", status_tag)}>{s.parse_status.clone()}</span>
+                            <span class={format!("tag {}", stock_tag)}>{s.stock_status.clone()}</span>
                             {s.canonical_color.clone().map(|c| view! { <span class="tag tag-info">{c}</span> })}
                             {s.canonical_size.clone().map(|sz| view! { <span class="tag tag-info">{sz}</span> })}
+                            {(!s.review_summary.is_empty()).then(|| {
+                                let summary = s.review_summary.clone();
+                                view! { <span class="muted">" Review: "{summary}</span> }
+                            })}
+                            {(!s.media_references.is_empty()).then(|| {
+                                let refs = s.media_references.clone();
+                                view! { <span class="muted">" Media: "{refs}</span> }
+                            })}
                             {needs_review.then(|| {
                                 let id = id.clone();
                                 let refresh = refresh.clone();
@@ -77,6 +92,9 @@ fn SupplyForm<F: Fn() + Clone + 'static>(on_done: F) -> impl IntoView {
     let (color, set_color) = create_signal(String::new());
     let (price, set_price) = create_signal(String::new());
     let (notes, set_notes) = create_signal(String::new());
+    let (stock_status, set_stock_status) = create_signal("unknown".to_string());
+    let (media_refs, set_media_refs) = create_signal(String::new());
+    let (review_summary, set_review_summary) = create_signal(String::new());
     let (err, set_err) = create_signal(Option::<String>::None);
 
     let submit = move |ev: leptos::ev::SubmitEvent| {
@@ -95,6 +113,9 @@ fn SupplyForm<F: Fn() + Clone + 'static>(on_done: F) -> impl IntoView {
             price_cents,
             discount_cents: None,
             notes: notes.get(),
+            stock_status: stock_status.get(),
+            media_references: media_refs.get(),
+            review_summary: review_summary.get(),
         };
         let on_done = on_done.clone();
         spawn_local(async move {
@@ -118,6 +139,17 @@ fn SupplyForm<F: Fn() + Clone + 'static>(on_done: F) -> impl IntoView {
                 on:input=move |e| set_color.set(event_target_value(&e)) required=true />
             <input placeholder="Price (cents)" prop:value=price type="number"
                 on:input=move |e| set_price.set(event_target_value(&e)) />
+            <select prop:value=stock_status
+                on:change=move |e| set_stock_status.set(event_target_value(&e))>
+                <option value="unknown">"Unknown"</option>
+                <option value="in_stock">"In Stock"</option>
+                <option value="low_stock">"Low Stock"</option>
+                <option value="out_of_stock">"Out of Stock"</option>
+            </select>
+            <input placeholder="Media References (comma-separated IDs)" prop:value=media_refs
+                on:input=move |e| set_media_refs.set(event_target_value(&e)) />
+            <input placeholder="Review Summary" prop:value=review_summary
+                on:input=move |e| set_review_summary.set(event_target_value(&e)) />
             <input placeholder="Notes" prop:value=notes
                 on:input=move |e| set_notes.set(event_target_value(&e)) />
             <button type="submit" class="btn">"Create Supply Entry"</button>

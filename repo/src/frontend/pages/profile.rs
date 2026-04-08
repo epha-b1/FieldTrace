@@ -1,12 +1,64 @@
 use leptos::*;
 use crate::api::client;
-use fieldtrace_shared::UserResponse;
+use fieldtrace_shared::{UserResponse, PrivacyPreferencesUpdate};
 
 #[component]
 pub fn ProfilePage(user: ReadSignal<Option<UserResponse>>) -> impl IntoView {
     let (msg, set_msg) = create_signal(Option::<String>::None);
     let (err, set_err) = create_signal(Option::<String>::None);
     let (show_pw, set_show_pw) = create_signal(false);
+
+    // Privacy preferences state
+    let (priv_loading, set_priv_loading) = create_signal(true);
+    let (priv_saving, set_priv_saving) = create_signal(false);
+    let (show_email, set_show_email) = create_signal(true);
+    let (show_phone, set_show_phone) = create_signal(false);
+    let (allow_export, set_allow_export) = create_signal(true);
+    let (allow_sharing, set_allow_sharing) = create_signal(false);
+
+    // Load privacy preferences on mount
+    spawn_local(async move {
+        match client::get_privacy_preferences().await {
+            Ok(prefs) => {
+                set_show_email.set(prefs.show_email);
+                set_show_phone.set(prefs.show_phone);
+                set_allow_export.set(prefs.allow_audit_log_export);
+                set_allow_sharing.set(prefs.allow_data_sharing);
+                set_priv_loading.set(false);
+            }
+            Err(e) => {
+                set_err.set(Some(format!("Failed to load privacy preferences: {}", e.message)));
+                set_priv_loading.set(false);
+            }
+        }
+    });
+
+    let save_privacy = move |_| {
+        set_priv_saving.set(true);
+        set_err.set(None);
+        let req = PrivacyPreferencesUpdate {
+            show_email: Some(show_email.get()),
+            show_phone: Some(show_phone.get()),
+            allow_audit_log_export: Some(allow_export.get()),
+            allow_data_sharing: Some(allow_sharing.get()),
+        };
+        spawn_local(async move {
+            match client::update_privacy_preferences(&req).await {
+                Ok(prefs) => {
+                    set_show_email.set(prefs.show_email);
+                    set_show_phone.set(prefs.show_phone);
+                    set_allow_export.set(prefs.allow_audit_log_export);
+                    set_allow_sharing.set(prefs.allow_data_sharing);
+                    set_msg.set(Some("Privacy preferences saved".into()));
+                    set_priv_saving.set(false);
+                }
+                Err(e) => {
+                    set_err.set(Some(e.message));
+                    set_priv_saving.set(false);
+                }
+            }
+        });
+    };
 
     let request_delete = move |_| {
         set_err.set(None);
@@ -58,6 +110,50 @@ pub fn ProfilePage(user: ReadSignal<Option<UserResponse>>) -> impl IntoView {
                         on_error=move |e: String| set_err.set(Some(e))
                     /> }
                 })}
+            </section>
+
+            <section class="ws-section">
+                <h3>"Privacy Preferences"</h3>
+                {move || if priv_loading.get() {
+                    view! { <p class="muted">"Loading preferences..."</p> }.into_view()
+                } else {
+                    view! {
+                        <div class="privacy-prefs">
+                            <label class="checkbox-label">
+                                <input type="checkbox"
+                                    prop:checked=move || show_email.get()
+                                    on:change=move |e| set_show_email.set(event_target_checked(&e))
+                                />
+                                " Show email to other users"
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox"
+                                    prop:checked=move || show_phone.get()
+                                    on:change=move |e| set_show_phone.set(event_target_checked(&e))
+                                />
+                                " Show phone to other users"
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox"
+                                    prop:checked=move || allow_export.get()
+                                    on:change=move |e| set_allow_export.set(event_target_checked(&e))
+                                />
+                                " Allow audit log export of my actions"
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox"
+                                    prop:checked=move || allow_sharing.get()
+                                    on:change=move |e| set_allow_sharing.set(event_target_checked(&e))
+                                />
+                                " Allow data sharing with partner facilities"
+                            </label>
+                            <button class="btn" on:click=save_privacy
+                                disabled=move || priv_saving.get()>
+                                {move || if priv_saving.get() { "Saving..." } else { "Save Preferences" }}
+                            </button>
+                        </div>
+                    }.into_view()
+                }}
             </section>
 
             <section class="ws-section">

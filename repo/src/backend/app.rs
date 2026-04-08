@@ -18,6 +18,7 @@ use crate::modules::dashboard::handlers as dash;
 use crate::modules::evidence::handlers as evid;
 use crate::modules::inspections::handlers as insp;
 use crate::modules::intake::handlers as intake;
+use crate::modules::profile::handlers as profile;
 use crate::modules::stock::handlers as stock;
 use crate::modules::supply::handlers as supply;
 use crate::modules::traceability::handlers as trace;
@@ -118,6 +119,8 @@ pub async fn create_app(config: &Config) -> Router {
         .route("/members", get(checkin::list_members).post(checkin::create_member))
         .route("/checkin", post(checkin::checkin))
         .route("/checkin/history", get(checkin::history))
+        // Profile / Privacy preferences
+        .route("/profile/privacy-preferences", get(profile::get_privacy).patch(profile::update_privacy))
         // Dashboard
         .route("/reports/summary", get(dash::summary))
         .route("/reports/export", get(dash::export_csv))

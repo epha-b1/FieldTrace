@@ -22,6 +22,7 @@ pub async fn register(
     Extension(tid): Extension<TraceId>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let cookie_secure = state.config.cookie_secure;
     let t = &tid.0;
 
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE anonymized = 0")
@@ -72,7 +73,7 @@ pub async fn register(
 
     Ok((
         StatusCode::CREATED,
-        session_headers(&session_id),
+        session_headers(&session_id, cookie_secure),
         Json(AuthResponse {
             user,
             message: "Administrator account created".into(),
@@ -87,6 +88,7 @@ pub async fn login(
     Extension(tid): Extension<TraceId>,
     Json(body): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let cookie_secure = state.config.cookie_secure;
     let t = &tid.0;
 
     check_lockout(&state.db, &body.username, t).await?;
@@ -136,7 +138,7 @@ pub async fn login(
 
     Ok((
         StatusCode::OK,
-        session_headers(&session_id),
+        session_headers(&session_id, cookie_secure),
         Json(AuthResponse {
             user,
             message: "Login successful".into(),
@@ -348,13 +350,14 @@ async fn record_failure(db: &SqlitePool, username: &str) {
         .await;
 }
 
-fn session_headers(session_id: &str) -> HeaderMap {
+fn session_headers(session_id: &str, cookie_secure: bool) -> HeaderMap {
+    let secure_attr = if cookie_secure { "; Secure" } else { "" };
     let mut headers = HeaderMap::new();
     headers.insert(
         "Set-Cookie",
         HeaderValue::from_str(&format!(
-            "session_id={}; HttpOnly; Path=/; SameSite=Strict; Max-Age=1800",
-            session_id
+            "session_id={}; HttpOnly; Path=/; SameSite=Strict; Max-Age=1800{}",
+            session_id, secure_attr
         ))
         .unwrap(),
     );

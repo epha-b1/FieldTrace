@@ -12,6 +12,10 @@ pub struct Config {
     /// Facility code used for watermarks and traceability codes. Sourced
     /// from `FACILITY_CODE` env var; defaults to the DB seed value.
     pub facility_code: String,
+    /// When true, the session cookie includes the `Secure` attribute so
+    /// browsers only send it over HTTPS. Set `COOKIE_SECURE=true` in
+    /// production. Defaults to `false` for local HTTP development.
+    pub cookie_secure: bool,
 }
 
 /// Check that `key` is exactly 64 hex characters (32 bytes for AES-256).
@@ -116,6 +120,9 @@ impl Config {
                 .unwrap_or_else(|_| "/app/storage".into()),
             facility_code: std::env::var("FACILITY_CODE")
                 .unwrap_or_else(|_| "FAC01".into()),
+            cookie_secure: std::env::var("COOKIE_SECURE")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
         }
     }
 }

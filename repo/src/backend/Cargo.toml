@@ -23,4 +23,5 @@ axum-extra = { version = "0.9", features = ["cookie"] }
 aes-gcm = "0.10"
 base64 = "0.22"
 hex = "0.4"
+sha2 = "0.10"
 fieldtrace-shared = { path = "../shared" }

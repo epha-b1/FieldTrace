@@ -200,6 +200,26 @@ pub async fn reports_summary() -> Result<serde_json::Value, ApiError> {
     resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
 }
 
+// ── Privacy Preferences ─────────────────────────────────────────────
+
+pub async fn get_privacy_preferences() -> Result<PrivacyPreferencesResponse, ApiError> {
+    let resp = Request::get("/profile/privacy-preferences").send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
+pub async fn update_privacy_preferences(req: &PrivacyPreferencesUpdate) -> Result<PrivacyPreferencesResponse, ApiError> {
+    let resp = Request::patch("/profile/privacy-preferences")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(req).unwrap())
+        .map_err(|e| ApiError { status: 0, code: "REQUEST".into(), message: format!("{:?}", e) })?
+        .send().await
+        .map_err(|e| ApiError { status: 0, code: "NETWORK".into(), message: e.to_string() })?;
+    if !resp.ok() { return Err(parse_error(resp).await); }
+    resp.json().await.map_err(|e| ApiError { status: 0, code: "PARSE".into(), message: e.to_string() })
+}
+
 // ── Account lifecycle ────────────────────────────────────────────────
 
 pub async fn request_account_deletion() -> Result<serde_json::Value, ApiError> {

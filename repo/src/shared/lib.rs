@@ -414,12 +414,30 @@ pub struct LegalHoldRequest { pub legal_hold: bool }
 pub struct SupplyRequest {
     pub name: String, pub sku: Option<String>, pub size: String, pub color: String,
     pub price_cents: Option<i64>, pub discount_cents: Option<i64>, pub notes: String,
+    /// Current stock status: "in_stock", "low_stock", "out_of_stock", or "unknown".
+    #[serde(default = "default_stock_status")]
+    pub stock_status: String,
+    /// Comma-separated media reference IDs (evidence links).
+    #[serde(default)]
+    pub media_references: String,
+    /// Short review summary for quick audit scan.
+    #[serde(default)]
+    pub review_summary: String,
 }
+
+fn default_stock_status() -> String { "unknown".into() }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupplyResponse {
     pub id: String, pub name: String, pub sku: Option<String>,
     pub canonical_size: Option<String>, pub canonical_color: Option<String>,
     pub price_cents: Option<i64>, pub parse_status: String, pub parse_conflicts: String, pub created_at: String,
+    #[serde(default = "default_stock_status")]
+    pub stock_status: String,
+    #[serde(default)]
+    pub media_references: String,
+    #[serde(default)]
+    pub review_summary: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupplyResolveRequest {
@@ -436,6 +454,23 @@ pub struct TraceCodeResponse {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracePublishRequest { pub comment: String }
+
+// ── Privacy Preferences ──
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivacyPreferencesResponse {
+    pub show_email: bool,
+    pub show_phone: bool,
+    pub allow_audit_log_export: bool,
+    pub allow_data_sharing: bool,
+    pub updated_at: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivacyPreferencesUpdate {
+    pub show_email: Option<bool>,
+    pub show_phone: Option<bool>,
+    pub allow_audit_log_export: Option<bool>,
+    pub allow_data_sharing: Option<bool>,
+}
 
 // ── Check-In ──
 #[derive(Debug, Clone, Serialize, Deserialize)]

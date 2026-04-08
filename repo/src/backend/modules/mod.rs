@@ -7,6 +7,7 @@ pub mod dashboard;
 pub mod evidence;
 pub mod inspections;
 pub mod intake;
+pub mod profile;
 pub mod stock;
 pub mod supply;
 pub mod traceability;
