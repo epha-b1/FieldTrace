@@ -296,7 +296,7 @@ fn extract_mp4_duration(data: &[u8]) -> Option<f64> {
 
 /// Walk a slice of ISO BMFF atoms and return the payload (after the 8-byte
 /// header) of the first atom whose type matches `target`.
-fn find_atom(data: &[u8], target: &[u8; 4]) -> Option<&[u8]> {
+fn find_atom<'a>(data: &'a [u8], target: &[u8; 4]) -> Option<&'a [u8]> {
     let mut offset = 0usize;
     while offset + 8 <= data.len() {
         let size = u32::from_be_bytes([
@@ -991,7 +991,7 @@ mod tests {
         // Create a 100x50 solid blue image
         let img = RgbImage::from_pixel(100, 50, Rgb([0u8, 0, 200]));
         img.save(&tmp).unwrap();
-        let before_size = std::fs::metadata(&tmp).unwrap().len();
+        let _before_size = std::fs::metadata(&tmp).unwrap().len();
 
         let success = burn_watermark_into_photo(
             tmp.to_str().unwrap(),
