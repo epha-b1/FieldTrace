@@ -9,9 +9,9 @@ FieldTrace is an offline-first facility management system built with Axum (Rust 
 - Architecture and module responsibilities: see `repo/README.md` (Slices Implemented section)
 - API endpoints and behavior: `docs/api-spec.md`
 - Requirement clarifications and assumptions: `docs/questions.md`
-- Database schema: `repo/migrations/` (12 migration files)
+- Database schema: `repo/migrations/` (14 migration files)
 - Test inventory: `repo/run_tests.sh`, `repo/API_tests/`, `repo/unit_tests/`
-
+- Frontend pages/components: 15 page components (includes admin, evidence_search, checkin)
 ## Key Architectural Decisions
 
 - **Single-binary deployment**: Backend + static frontend served from one Axum process
