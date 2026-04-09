@@ -187,12 +187,6 @@ pub async fn upload_start(
     let t = &tid.0;
     require_write_role(&user, t)?;
     check_size(&body.media_type, body.total_size, t)?;
-    if body.media_type == "video" && body.duration_seconds > MAX_VIDEO_SECONDS {
-        return Err(AppError::validation("Video exceeds 60 seconds", t));
-    }
-    if body.media_type == "audio" && body.duration_seconds > MAX_AUDIO_SECONDS {
-        return Err(AppError::validation("Audio exceeds 2 minutes", t));
-    }
 
     // Rate-limit: prevent resource exhaustion from unbounded session creation.
     let active: (i64,) = sqlx::query_as(
